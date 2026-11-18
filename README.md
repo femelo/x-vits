@@ -24,6 +24,22 @@ optionally in a chosen **style** and with **emphasis** on the words that matter.
 "Ask and you shall receive!"          --style happy     (emphasis predicted automatically)
 ```
 
+## 🤗 Try it in 30 seconds
+
+A ready-made expressive English voice (Expresso ex02, six styles) is on the Hugging Face Hub:
+**[fdemelo/x-vits](https://huggingface.co/fdemelo/x-vits)**, with audio samples comparing plain Piper and x-vits for every style.
+
+```python
+from xvits.runtime import XVits
+import soundfile as sf
+
+voice = XVits.from_pretrained("fdemelo/x-vits")
+audio = voice.synthesize("I never said *she* stole my money.", style="happy")
+sf.write("hello.wav", audio, voice.sample_rate)
+```
+
+(Needs `pip install "x-vits @ git+https://github.com/femelo/x-vits"` and `libespeak-ng1`. The voice is CC BY-NC 4.0, inherited from Expresso.)
+
 ## ✨ What you get
 
 - 🎭 **Speaking styles.** If your data has style labels (happy, sad, whispering, …), pick one at synthesis time, and exaggerate it if you like.
@@ -136,9 +152,9 @@ xvits-speak --model runs/my_voice/10_export/onnx \
 from xvits.runtime import XVits
 import soundfile as sf
 
-voice = XVits("runs/my_voice/10_export/onnx")
+voice = XVits.from_pretrained("runs/my_voice/10_export/onnx")   # local dir or a Hub repo id
 audio = voice.synthesize("Who's more miserable than her?", style="confused")  # emphasis predicted
-sf.write("out.wav", audio, voice.m["sample_rate"])
+sf.write("out.wav", audio, voice.sample_rate)
 ```
 
 Want a quick end-to-end check before a real run? Add `--quick` (tiny epochs and steps, no MOS models).

@@ -28,10 +28,11 @@ dependencies = [
   "espeak-phonemizer",   # needs the system libespeak-ng
   "onnx",
   "onnxruntime",
+  "huggingface_hub",     # XVits.from_pretrained
 ]
 
 [project.optional-dependencies]
-eval = ["transformers", "jiwer", "huggingface_hub"]   # UTMOS + Whisper WER in the recipe's eval stage
+eval = ["transformers", "jiwer"]   # UTMOS + Whisper WER in the recipe's eval stage
 dev = ["pytest", "ruff"]
 
 [project.scripts]

@@ -38,6 +38,27 @@ class XVits:
         self.styles = self.m["predictor"]["styles"]
         self.d = self.m["defaults"]
 
+    @classmethod
+    def from_pretrained(cls, repo_id: str, revision: Optional[str] = None, cache_dir: Optional[str] = None,
+                        token: Optional[str] = None, providers=("CPUExecutionProvider",)) -> "XVits":
+        """Load an exported voice from the Hugging Face Hub (or a local directory).
+
+            voice = XVits.from_pretrained("fdemelo/x-vits")
+        """
+        if Path(repo_id).is_dir():
+            return cls(Path(repo_id), providers)
+        from huggingface_hub import snapshot_download
+
+        path = snapshot_download(
+            repo_id, revision=revision, cache_dir=cache_dir, token=token,
+            allow_patterns=["*.onnx", "*.json", "*.npz"],
+        )
+        return cls(Path(path), providers)
+
+    @property
+    def sample_rate(self) -> int:
+        return int(self.m["sample_rate"])
+
     # ------------------------------------------------------------------
     def _style_index(self, style):
         if not style or not self.styles:
@@ -162,7 +183,8 @@ def main(argv=None):
     import soundfile as sf
 
     p = argparse.ArgumentParser(prog="xvits-speak", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--model", type=Path, required=True, help="directory written by xvits-export")
+    p.add_argument("--model", required=True,
+                   help="directory written by xvits-export, or a Hugging Face repo id (e.g. fdemelo/x-vits)")
     p.add_argument("--text", required=True, help="text; *word* marks force emphasis")
     p.add_argument("--style", help="style label (see runtime.json)")
     p.add_argument("--emphasis", choices=["auto", "marked", "none"], default="auto",
@@ -173,10 +195,10 @@ def main(argv=None):
     p.add_argument("--seed", type=int)
     p.add_argument("--out", type=Path, required=True)
     a = p.parse_args(argv)
-    voice = XVits(a.model)
+    voice = XVits.from_pretrained(a.model)
     audio = voice.synthesize(a.text, a.style, a.emphasis, a.seed, a.emphasis_scale, a.length_scale, a.steps)
-    sf.write(a.out, audio, voice.m["sample_rate"])
-    print(f"wrote {a.out} ({len(audio) / voice.m['sample_rate']:.2f} s)")
+    sf.write(a.out, audio, voice.sample_rate)
+    print(f"wrote {a.out} ({len(audio) / voice.sample_rate:.2f} s)")
 
 
 if __name__ == "__main__":
