@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "numpy", "cython>=3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilt-tts"
+version = "0.1.0"
+description = "Expressive prosody for Piper/VITS voices: styles, emphasis and natural intonation in a 25M-parameter model."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["tts", "text-to-speech", "piper", "vits", "prosody", "flow-matching", "onnx", "expressive-speech"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "torch>=2.4",
+  "torchaudio>=2.4",
+  "lightning>=2.4",
+  "numpy",
+  "scipy",
+  "numba",
+  "librosa",
+  "soundfile",
+  "espeak-phonemizer",   # needs the system libespeak-ng
+  "onnx",
+  "onnxruntime",
+]
+
+[project.optional-dependencies]
+eval = ["transformers", "jiwer", "huggingface_hub"]   # UTMOS + Whisper WER in the recipe's eval stage
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+lilt-train = "lilt.recipe:main"
+lilt-export = "lilt.export:main"
+lilt-speak = "lilt.runtime:main"
+
+[project.urls]
+Homepage = "https://github.com/femelo/x-vits"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+piper_train = ["VERSION", "py.typed", "eval/*.tsv", "norm_audio/models/*.onnx", "vits/monotonic_align/*.pyx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
