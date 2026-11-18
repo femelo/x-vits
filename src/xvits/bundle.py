@@ -1,4 +1,4 @@
-"""``lilt.json``: everything needed to synthesise with a trained Lilt voice."""
+"""``xvits.json``: everything needed to synthesise with a trained x-vits voice."""
 
 import json
 from dataclasses import asdict, dataclass, field

@@ -18,6 +18,6 @@ try:
         language_level=3,
     )
 except Exception as e:  # pragma: no cover
-    print(f"lilt: skipping the Cython MAS extension ({e}); the numba fallback will be used")
+    print(f"x-vits: skipping the Cython MAS extension ({e}); the numba fallback will be used")
 
 setup(ext_modules=ext_modules)

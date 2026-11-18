@@ -1,4 +1,4 @@
-"""``lilt-train``: the full per-voice recipe, from an LJSpeech-style dataset and a
+"""``xvits-train``: the full per-voice recipe, from an LJSpeech-style dataset and a
 Piper checkpoint to an expressive voice bundle (and optionally ONNX).
 
 Stages (each writes ``<stage>/done.json``; finished stages are skipped on rerun,
@@ -12,7 +12,7 @@ Stages (each writes ``<stage>/done.json``; finished stages are skipped on rerun,
   durations   style-conditioned duration predictor            (needs styles)
   prominence  stage 4b: word-prominence student from the recordings
   template    stage 4a: stress-anchored emphasis template
-  bundle      write lilt.json (everything synthesis needs)
+  bundle      write xvits.json (everything synthesis needs)
   eval        dev-set synthesis + metrics vs the fine-tuned baseline
   export      ONNX graphs + runtime manifest                    (optional)
 
@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-_LOG = logging.getLogger("lilt.recipe")
+_LOG = logging.getLogger("xvits.recipe")
 STAGES = ["data", "finetune", "prosody", "voice", "predictor", "durations",
           "prominence", "template", "bundle", "eval", "export"]
 
@@ -295,7 +295,7 @@ def stage_bundle(run: Run, data, ft, voice, pred, durs, prom, tpl):
         predictor=pred["ckpt"], durations=durs.get("ckpt"), prominence=prom["ckpt"], template=tpl["json"],
         styles=styles, frame_prosody=voice.get("frame_prosody", False),
     )
-    path = b.save(d / "lilt.json")
+    path = b.save(d / "xvits.json")
     return run.finish("bundle", {"bundle": str(path)})
 
 
@@ -307,7 +307,7 @@ def stage_eval(run: Run, data, pros, bundle):
     a, d = run.a, run.d("eval")
     b = Bundle.load(Path(bundle["bundle"]))
     systems = {"baseline": ["--checkpoint", b.baseline],
-               "lilt": b.synth_args(style="label", emphasis="predicted")}
+               "x-vits": b.synth_args(style="label", emphasis="predicted")}
     report = {}
     for name, args in systems.items():
         o = d / name
@@ -335,13 +335,13 @@ def stage_export(run: Run, bundle):
     if (info := run.done("export")):
         return info
     d = run.d("export")
-    run.sh("export", "lilt.export", bundle["bundle"], "--out", d / "onnx", "--verify")
+    run.sh("export", "xvits.export", bundle["bundle"], "--out", d / "onnx", "--verify")
     return run.finish("export", {"onnx": str(d / "onnx")})
 
 
 # ---------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None):
-    p = argparse.ArgumentParser(prog="lilt-train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(prog="xvits-train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", type=Path, required=True, help="LJSpeech-style dir: metadata.csv (id|...|text) + wavs/")
     p.add_argument("--base-ckpt", type=Path, required=True, help="Piper/VITS .ckpt to start from")
     p.add_argument("--base-config", type=Path, help="its config.json (phoneme map); default: next to the checkpoint")

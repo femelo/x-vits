@@ -10,7 +10,7 @@ Not included, but used at run time if you enable the evaluation stage:
 [UTMOS](https://github.com/tarepan/SpeechMOS) (MIT) and
 [Whisper](https://github.com/openai/whisper) via Hugging Face Transformers (MIT / Apache-2.0).
 
-**Data and voices.** Lilt ships no audio and no trained voices. The results in the
+**Data and voices.** x-vits ships no audio and no trained voices. The results in the
 README were obtained on the [Expresso](https://speechbot.github.io/expresso/)
 corpus, which is licensed **CC BY-NC 4.0**: voices trained on it inherit the
 non-commercial restriction. Check the license of any dataset and base checkpoint you use.

@@ -1,4 +1,4 @@
-"""Lilt package: bundle arguments, export-friendly interpolation, MAS fallback."""
+"""x-vits package: bundle arguments, export-friendly interpolation, MAS fallback."""
 
 import tempfile
 import unittest
@@ -10,14 +10,14 @@ import torch
 
 class BundleTest(unittest.TestCase):
     def test_roundtrip_and_synth_args(self):
-        from lilt.bundle import Bundle
+        from xvits.bundle import Bundle
 
         with tempfile.TemporaryDirectory() as d:
             b = Bundle(name="v", config="c.json", voice="v.ckpt", predictor="p.pt", durations="d.pt",
                        prominence="s.pt", template="t.json", styles=["happy", "sad"])
-            q = Bundle.load(b.save(Path(d) / "lilt.json"))
+            q = Bundle.load(b.save(Path(d) / "xvits.json"))
             self.assertEqual(q.styles, ["happy", "sad"])
-            self.assertTrue(Path(q.voice).is_absolute())  # relative paths resolve next to lilt.json
+            self.assertTrue(Path(q.voice).is_absolute())  # relative paths resolve next to xvits.json
             a = q.synth_args(style="happy", emphasis="predicted")
             self.assertIn("--prominence-student", a)
             self.assertEqual(a[a.index("--pp-temperature") + 1], "0.8,0.9")  # per-style temperature
@@ -28,7 +28,7 @@ class BundleTest(unittest.TestCase):
 
 class InterpTest(unittest.TestCase):
     def test_vectorised_matches_reference(self):
-        from lilt.export import interp_prosody_frames_onnx
+        from xvits.export import interp_prosody_frames_onnx
         from piper_train.vits.models import interp_prosody_frames
 
         g = torch.Generator().manual_seed(0)

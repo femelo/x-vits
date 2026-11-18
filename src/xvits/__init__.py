@@ -1,4 +1,4 @@
-"""Lilt: expressive prosody for Piper/VITS voices."""
+"""x-vits: expressive prosody for Piper/VITS voices."""
 
 __version__ = "0.1.0"
 

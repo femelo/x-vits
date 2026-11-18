@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel", "numpy", "cython>=3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lilt-tts"
+name = "x-vits"
 version = "0.1.0"
 description = "Expressive prosody for Piper/VITS voices: styles, emphasis and natural intonation in a 25M-parameter model."
 readme = "README.md"
@@ -35,9 +35,9 @@ eval = ["transformers", "jiwer", "huggingface_hub"]   # UTMOS + Whisper WER in t
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-lilt-train = "lilt.recipe:main"
-lilt-export = "lilt.export:main"
-lilt-speak = "lilt.runtime:main"
+xvits-train = "xvits.recipe:main"
+xvits-export = "xvits.export:main"
+xvits-speak = "xvits.runtime:main"
 
 [project.urls]
 Homepage = "https://github.com/femelo/x-vits"

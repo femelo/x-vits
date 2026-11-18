@@ -6,7 +6,7 @@
 #   metadata.csv               id|text, with Expresso's *emphasis* marks kept
 # (whisper, singing, longform and <laugh> rows were left out: 2.2 h remain)
 set -euo pipefail
-lilt-train \
+xvits-train \
   --dataset data/expresso_ex02 \
   --base-ckpt checkpoints/lj-med_1000.ckpt \
   --base-config checkpoints/config.json \

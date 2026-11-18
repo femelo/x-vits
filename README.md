@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🎶 Lilt
+# 🎶 x-vits
 
-**Give your Piper voices a lilt.**
+**Expressive prosody for Piper voices.**
 Styles, emphasis and natural intonation for fast, local VITS text-to-speech, in about 25M parameters.
 
 `pip install` · one command per voice · ONNX out · runs on a CPU
@@ -15,7 +15,7 @@ Styles, emphasis and natural intonation for fast, local VITS text-to-speech, in 
 everything in the same careful, slightly flat way. The audio quality is already there. What's missing is
 **prosody**: the melody, rhythm and emphasis that tell you *how* something is said.
 
-Lilt is an incremental recipe on top of an existing Piper/VITS checkpoint. It teaches the voice to
+x-vits is an incremental recipe on top of an existing Piper/VITS checkpoint. It teaches the voice to
 take intonation as an input, then trains small models that predict that intonation from text,
 optionally in a chosen **style** and with **emphasis** on the words that matter.
 
@@ -30,7 +30,7 @@ optionally in a chosen **style** and with **emphasis** on the words that matter.
 - 💥 **Word emphasis, two ways.** Mark words with `*asterisks*`, or let a 1.2M-parameter student predict which words to stress. The emphasis follows the shape found in real speech: pitch rises into the stressed syllable, peaks, then releases below baseline, and the syllable stretches and relaxes.
 - 🌊 **Flow-matching prosody.** A conditional flow-matching model *samples* pitch, voicing and energy per phoneme, so every sentence isn't averaged into the same contour.
 - 🎚️ **Style-aware timing.** The voice's own duration predictor learns styles too: sad slows down, enunciated takes its pauses.
-- 🔁 **One recipe for any voice.** `lilt-train` turns an LJSpeech-style folder and a Piper checkpoint into an expressive voice. No labels are needed: emphasis and prominence are learned from the recordings themselves.
+- 🔁 **One recipe for any voice.** `xvits-train` turns an LJSpeech-style folder and a Piper checkpoint into an expressive voice. No labels are needed: emphasis and prominence are learned from the recordings themselves.
 - 📦 **ONNX export with a tiny runtime.** Five graphs plus a numpy driver. The export is verified against PyTorch end to end (max difference ≈ 1e-5).
 - 🪶 **Still small and fast.** About 25.5M parameters at inference, against Piper medium's 16M. The ONNX runtime runs faster than real time on 4 CPU threads: real-time factor 0.6, or 0.24 with `--steps 4`.
 
@@ -42,21 +42,21 @@ six read styles), held-out sentences:
 | | pitch follows recording¹ | word errors² | UTMOS³ |
 |---|---|---|---|
 | Piper voice, fine-tuned | 0.35 | 1.2 % | 4.08 |
-| **Lilt** (style + predicted prosody) | **0.44** | **0.6 %** | 4.04 |
-| Lilt voice, given the *real* pitch | 0.94 | 2.3 % | 3.97 |
+| **x-vits** (style + predicted prosody) | **0.44** | **0.6 %** | 4.04 |
+| x-vits voice, given the *real* pitch | 0.94 | 2.3 % | 3.97 |
 
 | Emphasis on a marked word | pitch peak | lengthening |
 |---|---|---|
 | recording | +5.3 st | ×1.41 |
-| Lilt, emphasis off | +2.3 st | ×1.06 |
-| Lilt, emphasis on | **+4.6 st** | ×1.11 – ×1.25 |
+| x-vits, emphasis off | +2.3 st | ×1.06 |
+| x-vits, emphasis on | **+4.6 st** | ×1.11 – ×1.25 |
 
 | Which word carries the main stress? (no marks) | agreement with the recording |
 |---|---|
 | random word | 15 % |
 | "last word" rule | 34 % |
 | the same speaker, same text, another style | 36 % |
-| **Lilt prominence student** | **42 %** |
+| **x-vits prominence student** | **42 %** |
 
 <sub>¹ Correlation of the synthesised pitch contour with the real recording of the same sentence (the voice cannot know the exact take, so this is a lower bound on naturalness). ² Whisper-small WER. ³ Automatic MOS; it rates audio quality, not prosody. Design choices were also guided by informal (mostly blind) listening tests with a single listener. Treat those as anecdotal, and run your own.</sub>
 
@@ -116,7 +116,7 @@ columns are ignored and the last column is the text). Words may carry `*emphasis
 **Train** (one GPU; finished stages are skipped when you rerun the same command, and an interrupted stage starts over):
 
 ```bash
-lilt-train \
+xvits-train \
   --dataset data/my_voice \
   --base-ckpt piper/en_US-lessac-medium.ckpt \
   --out runs/my_voice \
@@ -128,15 +128,15 @@ lilt-train \
 **Speak** with the exported voice, with no PyTorch needed:
 
 ```bash
-lilt-speak --model runs/my_voice/10_export/onnx \
+xvits-speak --model runs/my_voice/10_export/onnx \
   --text "I *really* didn't expect that." --style happy --out hello.wav
 ```
 
 ```python
-from lilt.runtime import Lilt
+from xvits.runtime import XVits
 import soundfile as sf
 
-voice = Lilt("runs/my_voice/10_export/onnx")
+voice = XVits("runs/my_voice/10_export/onnx")
 audio = voice.synthesize("Who's more miserable than her?", style="confused")  # emphasis predicted
 sf.write("out.wav", audio, voice.m["sample_rate"])
 ```
@@ -148,14 +148,14 @@ Want a quick end-to-end check before a real run? Add `--quick` (tiny epochs and 
 | | where | effect |
 |---|---|---|
 | style | `--style NAME` | one of the voice's styles; none gives a neutral mix |
-| style exaggeration | `pp_guidance` in `lilt.json` | `"1.0,2.0"` = timing ×1, pitch/energy ×2 |
+| style exaggeration | `pp_guidance` in `xvits.json` | `"1.0,2.0"` = timing ×1, pitch/energy ×2 |
 | emphasis strength | `--emphasis-scale` | 1.0 = the average real emphasis; 1.5 is clearer |
 | emphasis source | `--emphasis auto\|marked\|none` | auto uses marks if present, otherwise the student |
 | pace | `--length-scale` | >1 is slower |
 | variety | `pp_temperature` | `"dur,pitch"`; higher is livelier but riskier |
 
 The PyTorch path (`python -m piper_train.eval.synthesize`) exposes everything, including the learned
-emphasis models, stage-by-stage ablations and real-prosody resynthesis. See `lilt.Bundle.synth_args`.
+emphasis models, stage-by-stage ablations and real-prosody resynthesis. See `xvits.Bundle.synth_args`.
 
 ## 📦 Exported model
 
@@ -173,7 +173,7 @@ predicted pitch by about 0.1 semitone on average. Style exaggeration doubles the
 everything else is a single pass.
 
 Exported voices are **not** drop-in files for Piper's C++ runtime, because the prosody loop lives in
-`lilt.runtime`. The graphs are plain ONNX, though, and the runtime is about 200 lines of numpy, easy
+`xvits.runtime`. The graphs are plain ONNX, though, and the runtime is about 200 lines of numpy, easy
 to port.
 
 ## ⚠️ Limitations
@@ -187,7 +187,7 @@ to port.
 ## 🗂️ Layout
 
 ```text
-src/lilt/            recipe (lilt-train), bundle, ONNX export (lilt-export), runtime (lilt-speak)
+src/xvits/            recipe (xvits-train), bundle, ONNX export (xvits-export), runtime (xvits-speak)
 src/piper_train/     Piper's VITS trainer, extended:
   vits/              prosody-conditioned prior, frame-level prosody, SDP conditioning hook
   prosody/           extraction, flow-matching predictor, style SDP, emphasis, prominence, template fit

@@ -1,4 +1,4 @@
-"""``lilt-export``: a Lilt bundle -> ONNX graphs + ``runtime.json``.
+"""``xvits-export``: an x-vits bundle -> ONNX graphs + ``runtime.json``.
 
 Graphs (all batch 1, dynamic length; noise is an input so runs are reproducible):
 
@@ -27,7 +27,7 @@ import numpy as np
 import torch
 from torch import nn
 
-_LOG = logging.getLogger("lilt.export")
+_LOG = logging.getLogger("xvits.export")
 OPSET = 17
 
 
@@ -290,7 +290,7 @@ def verify_export(out: Path, b, text: str, tol: float = 1e-3):
     from piper_train.eval.synthesize import load_model
     from piper_train.vits import models as vm
 
-    from .runtime import Lilt
+    from .runtime import XVits
 
     torch.backends.mha.set_fastpath_enabled(False)
     g = load_model(Path(b.voice), "cpu", False).model_g.eval()
@@ -335,10 +335,10 @@ def verify_export(out: Path, b, text: str, tol: float = 1e-3):
 
     # full chain: ONNX runtime vs the PyTorch path, same noise, several lengths
     # (dynamic shapes must not depend on the traced sentence)
-    lilt = Lilt(out)
+    voice = XVits(out)
     style = b.styles[0] if b.styles else None
     for k, sent in enumerate([text, "Yes.", "Well, that was a *much* longer sentence than the one we used for tracing, wasn't it?"]):
-        a_onnx, trace = lilt.synthesize(sent, style=style, seed=1234 + k, return_trace=True)
+        a_onnx, trace = voice.synthesize(sent, style=style, seed=1234 + k, return_trace=True)
         a_torch = torch_reference(b, g, trace)
         n = min(len(a_onnx), len(a_torch))
         diff = float(np.abs(a_onnx[:n] - a_torch[:n]).max())
@@ -346,7 +346,7 @@ def verify_export(out: Path, b, text: str, tol: float = 1e-3):
                   len(trace["ids"]), len(a_onnx), len(a_torch), diff)
         assert len(a_onnx) == len(a_torch), "length mismatch"
         assert diff < 5e-2, f"end-to-end mismatch {diff}"
-    if lilt.prom is not None:  # prominence student at another length
+    if voice.prom is not None:  # prominence student at another length
         from piper_train.prosody.prominence import ProminenceHead
 
         ck = torch.load(b.prominence, map_location="cpu", weights_only=False)
@@ -355,7 +355,7 @@ def verify_export(out: Path, b, text: str, tol: float = 1e-3):
         with torch.no_grad():
             x2, m2 = Encoder(g)(ids2, torch.LongTensor([ids2.size(1)]))
             ref = head(x2, m2).numpy()
-        got = lilt.prom.run(None, {"x": x2.numpy(), "x_mask": m2.numpy()})[0]
+        got = voice.prom.run(None, {"x": x2.numpy(), "x_mask": m2.numpy()})[0]
         _LOG.info("verify prominence: max |diff| %.2e", np.abs(ref - got).max())
         assert np.abs(ref - got).max() < 1e-3
     _LOG.info("verification passed")
@@ -396,8 +396,8 @@ def torch_reference(b, g, trace):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="lilt-export", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("bundle", type=Path, help="lilt.json")
+    p = argparse.ArgumentParser(prog="xvits-export", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("bundle", type=Path, help="xvits.json")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--verify", action="store_true")
     p.add_argument("--text", help="sentence used for tracing/verification")

@@ -1,6 +1,6 @@
-"""``lilt-speak``: ONNX runtime for an exported Lilt voice (numpy + onnxruntime).
+"""``xvits-speak``: ONNX runtime for an exported x-vits voice (numpy + onnxruntime).
 
-    lilt-speak --model voice_onnx/ --text "I *really* didn't expect that." \\
+    xvits-speak --model voice_onnx/ --text "I *really* didn't expect that." \\
         --style happy --out hello.wav
 
 Text may use *word* marks for explicit emphasis; without marks, the prominence
@@ -18,7 +18,7 @@ import numpy as np
 N_TARGETS = 4
 
 
-class Lilt:
+class XVits:
     def __init__(self, model_dir: Path, providers=("CPUExecutionProvider",)):
         import onnxruntime as ort
 
@@ -161,8 +161,8 @@ class Lilt:
 def main(argv=None):
     import soundfile as sf
 
-    p = argparse.ArgumentParser(prog="lilt-speak", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--model", type=Path, required=True, help="directory written by lilt-export")
+    p = argparse.ArgumentParser(prog="xvits-speak", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--model", type=Path, required=True, help="directory written by xvits-export")
     p.add_argument("--text", required=True, help="text; *word* marks force emphasis")
     p.add_argument("--style", help="style label (see runtime.json)")
     p.add_argument("--emphasis", choices=["auto", "marked", "none"], default="auto",
@@ -173,10 +173,10 @@ def main(argv=None):
     p.add_argument("--seed", type=int)
     p.add_argument("--out", type=Path, required=True)
     a = p.parse_args(argv)
-    lilt = Lilt(a.model)
-    audio = lilt.synthesize(a.text, a.style, a.emphasis, a.seed, a.emphasis_scale, a.length_scale, a.steps)
-    sf.write(a.out, audio, lilt.m["sample_rate"])
-    print(f"wrote {a.out} ({len(audio) / lilt.m['sample_rate']:.2f} s)")
+    voice = XVits(a.model)
+    audio = voice.synthesize(a.text, a.style, a.emphasis, a.seed, a.emphasis_scale, a.length_scale, a.steps)
+    sf.write(a.out, audio, voice.m["sample_rate"])
+    print(f"wrote {a.out} ({len(audio) / voice.m['sample_rate']:.2f} s)")
 
 
 if __name__ == "__main__":
