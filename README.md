@@ -26,8 +26,10 @@ optionally in a chosen **style** and with **emphasis** on the words that matter.
 
 ## 🤗 Try it in 30 seconds
 
-A ready-made expressive English voice (Expresso ex02, six styles) is on the Hugging Face Hub:
-**[fdemelo/x-vits](https://huggingface.co/fdemelo/x-vits)**, with audio samples comparing plain Piper and x-vits for every style.
+Two ready-made voices are on the Hugging Face Hub, each with audio samples comparing plain Piper, x-vits and the recordings:
+
+- **[fdemelo/x-vits](https://huggingface.co/fdemelo/x-vits)**: English (Expresso ex02), six styles, CC BY-NC 4.0.
+- **[fdemelo/x-vits-thorsten-emotional](https://huggingface.co/fdemelo/x-vits-thorsten-emotional)**: German (Thorsten-Voice), eight emotions, CC0.
 
 ```python
 from xvits.runtime import XVits
@@ -38,7 +40,7 @@ audio = voice.synthesize("I never said *she* stole my money.", style="happy")
 sf.write("hello.wav", audio, voice.sample_rate)
 ```
 
-(Needs `pip install "x-vits @ git+https://github.com/femelo/x-vits"` and `libespeak-ng1`. The voice is CC BY-NC 4.0, inherited from Expresso.)
+(Needs `pip install "x-vits @ git+https://github.com/femelo/x-vits"` and `libespeak-ng1`. Each voice inherits the license of its data.)
 
 ## ✨ What you get
 
@@ -91,16 +93,22 @@ neutral speech) plus Thorsten's own [emotional dataset](https://www.openslr.org/
 each of neutral, amused, angry, disgusted, sleepy, surprised, drunk and whispering, 2.9 h). The dev set holds
 out 15 whole sentences in all eight emotions.
 
-| | pitch follows recording¹ | timing follows recording |
-|---|---|---|
-| Piper voice, fine-tuned | 0.21 | 0.24 |
-| **x-vits** | **0.34** | **0.30** |
-
-| Vocal effort (2–5 kHz vs 0–1 kHz, dB) | angry | sleepy | whisper |
+| | pitch follows recording¹ | timing follows recording | word errors² |
 |---|---|---|---|
-| recording | −19.9 | −23.7 | −0.5 |
-| Piper voice, fine-tuned | −23.1 | −22.3 | −22.9 |
-| **x-vits** | **−21.2** | **−23.6** | **−1.3** |
+| Piper voice, fine-tuned | 0.21 | 0.23 | 9.1 % |
+| **x-vits 0.2** | **0.37** | **0.30** | 12.6 % |
+| the recordings | | | 3.2 % |
+
+| Vocal effort (2–5 kHz vs 0–1 kHz, dB) | angry | neutral | sleepy | whisper |
+|---|---|---|---|---|
+| recording | −19.9 | −23.9 | −23.7 | −0.5 |
+| Piper voice, fine-tuned | −23.1 | −23.0 | −22.3 | −22.9 |
+| **x-vits 0.2** | **−21.9** | **−23.8** | **−23.7** | **−2.0** |
+
+Angry pitch went from 196 Hz to 214 Hz (recording 220 Hz) once the pitch tracker stopped clipping it.
+Word errors are higher than plain Piper's because Piper reads every emotion in a clear neutral voice,
+while x-vits whispers, slurs and shouts. The voice is published as
+[fdemelo/x-vits-thorsten-emotional](https://huggingface.co/fdemelo/x-vits-thorsten-emotional).
 
 The fine-tuned Piper voice reads all eight emotions in the same voice; it cannot whisper or shout.
 UTMOS is not reported here: it is trained on English and rates Thorsten's own recordings 2.5 on average
