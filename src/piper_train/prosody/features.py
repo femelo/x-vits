@@ -5,14 +5,61 @@ Channels (all per Piper token, BOS/pads/EOS included):
   1  voiced fraction of the token's frames
   2  log spectral energy, standardised
   3  vocal effort: spectral tilt, log(2-5 kHz power / 50 Hz-1 kHz power),
-     standardised.  Present when the prosody stats carry ``tilt_mean``;
-     older extractions have three channels and keep working.
+     measured on voiced tokens and interpolated across the others
+     (``voiced_effort``, when the stats say ``tilt_voiced``), standardised with
+     voiced-token statistics.  Present when the prosody stats carry
+     ``tilt_mean``; older extractions have three channels and keep working.
 An all-zero matrix is the "no prosody given" input (also used for dropout).
 """
 
 import numpy as np
 
 N_CHANNELS = 3  # legacy default (no vocal-effort channel)
+
+
+VOICELESS = set("ptkqʔfθsʃçxχħhɸʂɕʍɬ") | {"ts", "tʃ", "tɕ", "ʈʂ"}
+VOICED = set("aeiouyɑɐɒæəɘɚɛɜɝɞɨɪʊʌɔøœɯɤʏɵɶmnŋɲɴlɫɹrɾɽʀʁjwʋɥʎʟː")
+
+
+def fix_voicing_np(prosody: np.ndarray, symbols, max_vfrac: float = 0.4) -> np.ndarray:
+    """Voicing by phoneme identity (numpy twin of ``predictor.fix_voicing``).
+
+    prosody: [C, T] (lf0 standardised with 0 = unvoiced, vfrac, ...).  Voiceless
+    consonants get vfrac <= max_vfrac and no pitch; vowels, sonorants and pads
+    between two of them become voiced, with log-F0 interpolated linearly from
+    the voiced tokens around them.  Removes voicing that flips on a voiceless
+    stop or off in the middle of a vowel (heard as a blip).
+    """
+    p = prosody.copy()
+    lf0, vf = p[0], p[1]
+    n = len(symbols)
+    force_on = []
+    for i, s in enumerate(symbols):
+        if s in VOICELESS:
+            vf[i] = min(vf[i], max_vfrac)
+            lf0[i] = 0.0
+        elif s in VOICED or (s == "_" and 0 < i < n - 1 and symbols[i - 1] in VOICED and symbols[i + 1] in VOICED):
+            if vf[i] <= 0.5:
+                force_on.append(i)
+    voiced = [i for i in range(n) if vf[i] > 0.5 and i not in force_on]
+    if voiced and force_on:
+        lf0[force_on] = np.interp(force_on, voiced, lf0[voiced])
+        vf[force_on] = 1.0
+    return p
+
+
+def voiced_effort(tilt: np.ndarray, vfrac: np.ndarray) -> np.ndarray:
+    """Vocal effort lives in voiced sounds: keep the voiced tokens' tilt and
+    interpolate it linearly across consonants, pads and pauses (the way pitch
+    is bridged), so brightness cannot swing on tokens where it means nothing.
+    An utterance without voiced tokens (whispering) keeps its mean tilt."""
+    t = np.asarray(tilt, np.float64).copy()
+    v = np.asarray(vfrac) > 0.5
+    if not v.any():
+        return np.full_like(t, t.mean() if len(t) else 0.0)
+    idx = np.arange(len(t))
+    t[~v] = np.interp(idx[~v], idx[v], t[v])
+    return t
 
 
 def n_channels(stats: dict) -> int:
@@ -26,5 +73,6 @@ def feature_matrix(utt: dict, stats: dict) -> np.ndarray:
     en = (utt["energy"] - stats["energy_mean"]) / stats["energy_std"]
     cols = [lf0, utt["vfrac"], en]
     if n_channels(stats) == 4:
-        cols.append((utt["tilt"] - stats["tilt_mean"]) / stats["tilt_std"])
+        tilt = voiced_effort(utt["tilt"], utt["vfrac"]) if stats.get("tilt_voiced") else utt["tilt"]
+        cols.append((tilt - stats["tilt_mean"]) / stats["tilt_std"])
     return np.stack(cols, axis=1).astype(np.float32)

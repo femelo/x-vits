@@ -29,12 +29,15 @@ class Bundle:
             # per-channel "duration,pitch,energy"; energy livelier (angry Thorsten: word-scale
             # loudness variation 3.48 -> 3.72 dB, recordings 4.28)
             "pp_temperature": "0.8,0.7,1.0",
-            "pp_guidance": "1.0,2.0,4.0",      # style exaggeration: timing, pitch, energy
+            # style exaggeration: timing, pitch, energy, effort.  Effort is not exaggerated:
+            # at 4 the happy/laughing Expresso styles came out ~3 dB brighter than the speaker
+            "pp_guidance": "1.0,2.0,4.0,1.0",
             "style_temperature": {"happy": "0.8,0.9,1.0"},
             "template_scale": 1.5,
             "prominence_threshold": 0.5,
             "pp_steps": 16,
             "unvoiced_styles": [],             # e.g. whisper: voicing forced off (set by the recipe from the data)
+            "voicing_fix": True,               # voicing by phoneme identity: no blips from a voiced k or unvoiced vowel
         }
         d.update(self.defaults or {})
         self.defaults = d
@@ -69,6 +72,8 @@ class Bundle:
              "--pp-temperature", t, "--pp-guidance", d["pp_guidance"], "--pp-steps", str(d["pp_steps"]),
              "--pp-durations", "sdp", "--noise-scale", str(d["noise_scale"]),
              "--noise-scale-w", str(d["noise_scale_w"]), "--length-scale", str(d["length_scale"])]
+        if d["voicing_fix"]:
+            a += ["--pp-voicing-fix"]
         if style:
             a += ["--pp-style", style]
             if d["unvoiced_styles"]:

@@ -212,7 +212,8 @@ def main() -> None:
 
     lf0 = np.concatenate([u["lf0"][~np.isnan(u["lf0"])] for u in utts.values()])
     en = np.concatenate([u["energy"] for u in utts.values()])
-    ti = np.concatenate([u["tilt"] for u in utts.values()])
+    # effort statistics over voiced tokens only (consonants and silence would set the scale)
+    ti = np.concatenate([u["tilt"][u["vfrac"] > 0.5] for u in utts.values()])
     stats = {
         "lf0_mean": float(lf0.mean()),
         "lf0_std": float(lf0.std()),
@@ -220,6 +221,7 @@ def main() -> None:
         "energy_std": float(en.std()),
         "tilt_mean": float(ti.mean()),
         "tilt_std": float(ti.std()),
+        "tilt_voiced": True,  # features use voiced_effort(); see features.py
         "f0_range": list(f0_range),
         "sample_rate": sr,
         "hop": HOP,

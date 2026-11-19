@@ -50,20 +50,27 @@ sf.write("hello.wav", audio, voice.sample_rate)
 - 🎚️ **Style-aware timing.** The voice's own duration predictor learns styles too: sad slows down, enunciated takes its pauses.
 - 🔁 **One recipe for any voice and language.** `xvits-train` turns an LJSpeech-style folder and a Piper checkpoint into an expressive voice. No labels are needed: emphasis and prominence are learned from the recordings themselves. The pitch range adapts to the speaker, including shouting, and evaluation picks the Whisper model for the voice's language.
 - 📦 **ONNX export with a tiny runtime.** Five graphs plus a numpy driver. The export is verified against PyTorch end to end (max difference ≈ 1e-5).
-- 🪶 **Still small and fast.** About 25.5M parameters at inference, against Piper medium's 16M. The ONNX runtime runs faster than real time on 4 CPU threads: real-time factor 0.6, or 0.24 with `--steps 4`.
+- 🪶 **Still small and fast.** About 25M parameters at inference, against Piper medium's 16M. The ONNX runtime runs faster than real time on 4 CPU threads: real-time factor 0.6, or 0.24 with `--steps 4`.
 
 ## 🎧 Results
 
 On one expressive English speaker ([Expresso](https://speechbot.github.io/expresso/) `ex02`, 2.2 h,
 six read styles), held-out sentences:
 
-| | pitch follows recording¹ | word errors² | UTMOS³ |
-|---|---|---|---|
-| Piper voice, fine-tuned | 0.35 | 1.2 % | 4.08 |
-| **x-vits** (style + predicted prosody) | **0.44** | **0.6 %** | 4.04 |
-| x-vits voice, given the *real* pitch | 0.94 | 2.3 % | 3.97 |
+| | pitch follows recording¹ | timing follows recording | word errors² | UTMOS³ |
+|---|---|---|---|---|
+| Piper voice, fine-tuned | 0.37 | 0.30 | 1.7 % | 4.08 |
+| x-vits 0.1 | 0.37 | 0.39 | 2.1 % | 4.01 |
+| **x-vits 0.2** (vocal effort, wider pitch range) | **0.40** | 0.37 | 3.6 % | 3.86 |
+| x-vits 0.2 voice, given the *real* prosody | 0.92 | 0.74 | 3.9 % | 3.89 |
+| the recordings themselves | | | | 4.12 |
 
-| Emphasis on a marked word | pitch peak | lengthening |
+Both automatic scores prefer calm read speech. UTMOS rates the speaker's own laughing takes 2.49, and
+x-vits 0.2 loses most of its UTMOS where it got more expressive: happy and laughing. In informal
+listening, 0.2 improved the extremes (happy, sad) and kept the other styles as good. Judge for yourself on the
+[model card](https://huggingface.co/fdemelo/x-vits), which plays both versions next to the recordings.
+
+| Emphasis on a marked word (x-vits 0.1) | pitch peak | lengthening |
 |---|---|---|
 | recording | +5.3 st | ×1.41 |
 | x-vits, emphasis off | +2.3 st | ×1.06 |
@@ -99,7 +106,18 @@ The fine-tuned Piper voice reads all eight emotions in the same voice; it cannot
 UTMOS is not reported here: it is trained on English and rates Thorsten's own recordings 2.5 on average
 (whispering 1.25), so it cannot rank naturalness for this voice.
 
-<sub>¹ Correlation of the synthesised pitch contour with the real recording of the same sentence (the voice cannot know the exact take, so this is a lower bound on naturalness). ² Whisper WER (small.en for English, large-v3-turbo otherwise). ³ Automatic MOS; it rates audio quality, not prosody. Design choices were also guided by informal (mostly blind) listening tests with a single listener. Treat those as anecdotal, and run your own.</sub>
+<sub>¹ Correlation of the synthesised pitch contour with the real recording of the same sentence, on 129 held-out sentences, averaged over two seeds (the voice cannot know the exact take, so this is a lower bound on naturalness). ² Whisper WER (small.en for English, large-v3-turbo otherwise). ³ Automatic MOS; it rates audio quality, not prosody. Design choices were also guided by informal (mostly blind) listening tests with a single listener. Treat those as anecdotal, and run your own.</sub>
+
+### What's new in 0.2
+
+- **Vocal effort** as a fourth prosody feature: brightness of voiced sounds, bridged across consonants and pauses like pitch, predicted per style.
+- **Pitch range** that covers shouting and excited speech (it used to clip at the speaker's median × 1.9).
+- **Voicing tied to the phonemes**: no more blips from a voiced *k* or an unvoiced vowel.
+- **Loudness** in the emphasis shape, and separate timing / pitch / energy / effort settings.
+- **Whispering** detected from the data and rendered unvoiced.
+- **Validated in German** (Thorsten-Voice), with language-aware evaluation.
+
+Voices exported with 0.2 need the 0.2 runtime; 0.1 voices still load.
 
 ## 🧠 How it works
 
@@ -198,12 +216,13 @@ Example configs: [`configs/expresso_ex02.sh`](configs/expresso_ex02.sh) (English
 | | where | effect |
 |---|---|---|
 | style | `--style NAME` | one of the voice's styles; none gives a neutral mix |
-| style exaggeration | `pp_guidance` in `xvits.json` | `"timing,pitch,energy"`; default `"1.0,2.0,4.0"` |
+| style exaggeration | `pp_guidance` in `xvits.json` | `"timing,pitch,energy,effort"`; default `"1.0,2.0,4.0,1.0"` |
 | emphasis strength | `--emphasis-scale` | 1.0 = the average real emphasis; 1.5 is clearer |
 | emphasis source | `--emphasis auto\|marked\|none` | auto uses marks if present, otherwise the student |
 | pace | `--length-scale` | >1 is slower |
 | variety | `pp_temperature` | `"timing,pitch,energy"`; default `"0.8,0.7,1.0"`; higher is livelier but riskier |
 | whispering | `unvoiced_styles` | styles rendered without voicing; set by the recipe from the data |
+| voicing | `voicing_fix` | voicing follows the phonemes (default on) |
 
 The PyTorch path (`python -m piper_train.eval.synthesize`) exposes everything, including the learned
 emphasis models, stage-by-stage ablations and real-prosody resynthesis. See `xvits.Bundle.synth_args`.

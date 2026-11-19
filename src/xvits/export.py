@@ -386,6 +386,11 @@ def torch_reference(b, g, trace):
         y = cfm.sample(cond, x_mask, n_steps=trace["steps"], temperature=t(trace["temperature"]).view(1, -1, 1),
                        noise=t(trace["noise0"]), solver="midpoint", g=style)
         _, pros = pred.decode(y, x_mask)
+        if trace.get("voicing_fix"):
+            from piper_train.prosody.features import fix_voicing_np
+
+            pros[0] = torch.from_numpy(fix_voicing_np(pros[0].numpy(), trace["symbols"]))
+            pros = pred.bridge_effort(pros, x_mask)
         shift = t(trace["p_st"]) * (math.log(2) / 12) / pred.stats["lf0_std"]
         pros[:, 0] = torch.where(pros[:, 1] > 0.5, pros[:, 0] + shift[None], pros[:, 0])
         pros[:, 2] += t(trace["e_log"])[None] / pred.stats["energy_std"]

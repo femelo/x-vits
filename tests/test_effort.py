@@ -42,6 +42,18 @@ class EffortTest(unittest.TestCase):
         self.assertEqual(m.shape, (6, 4))
         np.testing.assert_allclose(m[:, 3], (u["tilt"] + 4.0) / 1.5, rtol=1e-5)
 
+    def test_voiced_effort(self):
+        from piper_train.prosody.features import voiced_effort
+
+        t = np.array([9.0, 1.0, -9.0, 3.0, 9.0])
+        v = np.array([0.0, 1.0, 0.0, 1.0, 0.0])
+        np.testing.assert_allclose(voiced_effort(t, v), [1.0, 1.0, 2.0, 3.0, 3.0])  # bridged, edges held
+        np.testing.assert_allclose(voiced_effort(t, np.zeros(5)), np.full(5, t.mean()))  # whisper: mean
+        u = _utt()
+        u["vfrac"][2] = 0.0
+        m = feature_matrix(u, dict(STATS4, tilt_voiced=True))
+        np.testing.assert_allclose(m[2, 3], (np.mean(u["tilt"][[1, 3]]) + 4.0) / 1.5, rtol=1e-5)
+
     def test_predictor_width(self):
         kw = dict(text_channels=16, hidden=32, n_wn_layers=2, n_attn_layers=1, n_heads=2)
         self.assertEqual(ProsodyPredictor(STATS3, **kw).n_targets, 4)

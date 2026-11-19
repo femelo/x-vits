@@ -19,15 +19,16 @@ N_TARGETS = 4
 
 
 def per_channel(s: str, n_targets: int = N_TARGETS):
-    """'a' | 'dur,rest' | 'dur,pitch,energy' -> [duration, lf0, vfrac, energy(, effort)];
-    the vocal-effort channel (5 targets) follows the energy value."""
+    """'a' | 'dur,rest' | 'dur,pitch,energy' | 'dur,pitch,energy,effort' ->
+    [duration, lf0, vfrac, energy(, effort)]; effort follows energy unless given."""
     v = [float(x) for x in s.split(",")]
     if len(v) == 1:
         v = v * 3
     elif len(v) == 2:
         v = v + v[1:]
-    dur, pitch, energy = v
-    return [dur, pitch, pitch] + [energy] * (n_targets - 3)
+    dur, pitch, energy = v[:3]
+    effort = v[3] if len(v) > 3 else energy
+    return ([dur, pitch, pitch, energy] + [effort] * (n_targets - 4))[:n_targets]
 
 
 class XVits:
@@ -112,7 +113,17 @@ class XVits:
     def _decode(self, y, mask):
         vfrac = np.clip(y[:, 2:3], 0.0, 1.0)
         lf0 = y[:, 1:2] * (vfrac > 0.5)
-        return np.concatenate([lf0, vfrac, y[:, 3:]], 1) * mask  # energy (, vocal effort)
+        pros = np.concatenate([lf0, vfrac, y[:, 3:]], 1) * mask  # energy (, vocal effort)
+        return self._bridge_effort(pros)
+
+    def _bridge_effort(self, pros):
+        """Effort comes from voiced tokens and is interpolated across the others (as in training)."""
+        if pros.shape[1] < 4 or not self.pstats.get("tilt_voiced"):
+            return pros
+        from piper_train.prosody.features import voiced_effort
+
+        pros[0, 3] = voiced_effort(pros[0, 3], pros[0, 1])
+        return pros
 
     def _emphasis(self, text, x, mask, ids, style, scale, mode):
         """Per-token (pitch shift st, duration multiplier, log-energy offset, effort offset)
@@ -168,6 +179,12 @@ class XVits:
         n_steps = int(steps or d["pp_steps"])
         y, noise0 = self._sample_prosody(x, mask, sidx, temp, guidance, n_steps, rng)
         pros = self._decode(y, mask)
+        voicing_fix = bool(d.get("voicing_fix")) and style not in d.get("unvoiced_styles", [])
+        if voicing_fix:  # voicing follows the phonemes: no blips from flipped voicing
+            from piper_train.prosody.features import fix_voicing_np
+
+            pros[0] = fix_voicing_np(pros[0], [self.inv.get(int(i), "?") for i in ids])
+            pros = self._bridge_effort(pros)
         p_st, d_mul, e_log, t_log = self._emphasis(text, x, mask, ids, style,
                                             d["template_scale"] if emphasis_scale is None else emphasis_scale,
                                             emphasis)
@@ -198,7 +215,8 @@ class XVits:
         if return_trace:
             return audio, {"ids": ids, "noise0": noise0, "temperature": temp.ravel().tolist(), "guidance": guidance,
                            "steps": n_steps, "style_index": sidx, "prosody": pros, "p_st": p_st,
-                           "e_log": e_log, "t_log": t_log, "unvoiced": style in d.get("unvoiced_styles", []),
+                           "e_log": e_log, "t_log": t_log, "voicing_fix": voicing_fix, "w_ceil": w_ceil,
+                           "symbols": [self.inv.get(int(i), "?") for i in ids], "unvoiced": style in d.get("unvoiced_styles", []),
                            "d_mul": d_mul, "z": z, "h_add": h_add, "noise": noise, "length_scale": ls}
         return audio
 

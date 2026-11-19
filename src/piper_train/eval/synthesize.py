@@ -149,11 +149,12 @@ def main() -> None:
 
         predictor = ProsodyPredictor.load(args.prosody_predictor, args.device)
         # per-channel [duration, lf0, vfrac, energy(, effort)]: 1 value (all), 2 (duration,
-        # the rest) or 3 (duration, pitch+voicing, energy+effort)
+        # the rest), 3 (duration, pitch+voicing, energy+effort) or 4 (..., energy, effort)
         def per_channel(s):
             v = [float(x) for x in s.split(",")]
             v = v * 3 if len(v) == 1 else v + v[1:] if len(v) == 2 else v
-            return [v[0], v[1], v[1]] + [v[2]] * (predictor.n_targets - 3)
+            eff = v[3] if len(v) > 3 else v[2]
+            return ([v[0], v[1], v[1], v[2]] + [eff] * (predictor.n_targets - 4))[: predictor.n_targets]
 
         pp_temp = torch.tensor(per_channel(args.pp_temperature), device=args.device).view(1, -1, 1)
         g = per_channel(args.pp_guidance)
@@ -249,7 +250,8 @@ def main() -> None:
             )
             kw["durations"], kw["prosody"] = predictor.decode(y, x_mask)
             if args.pp_voicing_fix:
-                kw["prosody"] = fix_voicing(kw["prosody"], ids.tolist(), id_to_symbol)
+                kw["prosody"] = predictor.bridge_effort(
+                    fix_voicing(kw["prosody"], ids.tolist(), id_to_symbol), torch.ones_like(ids[:, None]).float())
             elif args.pp_voiceless_fix:
                 kw["prosody"] = fix_voiceless(kw["prosody"], ids.tolist(), id_to_symbol)
             if template is not None and (emph is not None or student is not None):

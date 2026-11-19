@@ -190,7 +190,22 @@ class ProsodyPredictor(nn.Module):
         lf0 = y[:, 1:2] * (vfrac > 0.5)  # unvoiced tokens: "no pitch" (0)
         rest = y[:, 3:]  # energy (, vocal effort)
         pros = torch.cat([lf0, vfrac, rest], dim=1) * mask
-        return dur, pros
+        return dur, self.bridge_effort(pros, mask)
+
+    def bridge_effort(self, pros, mask):
+        """Effort is defined on voiced tokens: re-derive it elsewhere from the voiced
+        neighbours (as in training, see features.voiced_effort).  Call again after
+        anything that changes the voicing (e.g. fix_voicing)."""
+        if pros.size(1) < 4 or not self.stats.get("tilt_voiced"):
+            return pros
+        from .features import voiced_effort
+
+        pros = pros.clone()
+        for b in range(pros.size(0)):
+            n = int(mask[b].sum())
+            e = voiced_effort(pros[b, 3, :n].double().cpu().numpy(), pros[b, 1, :n].double().cpu().numpy())
+            pros[b, 3, :n] = torch.from_numpy(e).to(pros)
+        return pros
 
     # ---- training / sampling ---------------------------------------------
     def loss(self, x_text, y, mask, style=None, weight=None, feats=None):
