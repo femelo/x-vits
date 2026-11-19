@@ -1,8 +1,8 @@
 """Score synthesized audio with UTMOS22 (strong).
 
-Uses a local checkout of ``tarepan/SpeechMOS`` (third_party/speechmos_repo,
-symlinked to ~/pocket-tts-distill/extra_pkgs/speechmos_repo) with its local
-weights; nothing is downloaded.
+Uses a local checkout of ``tarepan/SpeechMOS`` when ``SPEECHMOS_DIR`` points to one
+(weights at ``$SPEECHMOS_DIR/utmos22_strong.pt`` or ``SPEECHMOS_WEIGHTS``); otherwise
+loads ``tarepan/SpeechMOS`` from torch hub, which downloads its code and weights once.
 Defaults to CPU.
 
     python -m piper_train.eval.score_utmos --wav-dir out/baseline
@@ -19,20 +19,17 @@ import torchaudio
 
 import os
 
-# Local SpeechMOS checkout + weights (no network, no remote code). Override with
-# SPEECHMOS_DIR / SPEECHMOS_WEIGHTS.
-_DEFAULT_DIR = Path(__file__).resolve().parents[5] / "third_party" / "speechmos_repo"
-SPEECHMOS_DIR = Path(os.environ.get("SPEECHMOS_DIR", _DEFAULT_DIR))
-SPEECHMOS_WEIGHTS = Path(
-    os.environ.get("SPEECHMOS_WEIGHTS", SPEECHMOS_DIR / "utmos22_strong.pt")
-)
+SPEECHMOS_HUB = "tarepan/SpeechMOS:v1.2.0"
 
 
 def load_predictor(device: str):
-    model = torch.hub.load(
-        str(SPEECHMOS_DIR), "utmos22_strong", source="local", pretrained=False
-    )
-    model.load_state_dict(torch.load(SPEECHMOS_WEIGHTS, map_location="cpu"))
+    local = os.environ.get("SPEECHMOS_DIR")
+    if local:  # local checkout + weights: no network, no remote code
+        weights = Path(os.environ.get("SPEECHMOS_WEIGHTS", Path(local) / "utmos22_strong.pt"))
+        model = torch.hub.load(local, "utmos22_strong", source="local", pretrained=False)
+        model.load_state_dict(torch.load(weights, map_location="cpu"))
+    else:
+        model = torch.hub.load(SPEECHMOS_HUB, "utmos22_strong", trust_repo=True)
     return model.eval().to(device)
 
 

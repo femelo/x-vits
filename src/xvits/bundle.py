@@ -26,12 +26,15 @@ class Bundle:
             # tuned on Expresso: less timing randomness + slightly slower with the style predictor
             "noise_scale_w": 0.4 if self.durations else 0.8,
             "length_scale": 1.08 if self.durations else 1.0,
-            "pp_temperature": "0.8,0.7",       # duration, pitch/energy
-            "pp_guidance": "1.0,2.0",          # style exaggeration: timing, pitch/energy
-            "style_temperature": {"happy": "0.8,0.9"},
+            # per-channel "duration,pitch,energy"; energy livelier (angry Thorsten: word-scale
+            # loudness variation 3.48 -> 3.72 dB, recordings 4.28)
+            "pp_temperature": "0.8,0.7,1.0",
+            "pp_guidance": "1.0,2.0,4.0",      # style exaggeration: timing, pitch, energy
+            "style_temperature": {"happy": "0.8,0.9,1.0"},
             "template_scale": 1.5,
             "prominence_threshold": 0.5,
             "pp_steps": 16,
+            "unvoiced_styles": [],             # e.g. whisper: voicing forced off (set by the recipe from the data)
         }
         d.update(self.defaults or {})
         self.defaults = d
@@ -68,6 +71,8 @@ class Bundle:
              "--noise-scale-w", str(d["noise_scale_w"]), "--length-scale", str(d["length_scale"])]
         if style:
             a += ["--pp-style", style]
+            if d["unvoiced_styles"]:
+                a += ["--pp-unvoiced-styles", ",".join(d["unvoiced_styles"])]
         if self.durations:
             a += ["--dp-style-ckpt", self.durations]
         if emphasis != "none" and self.template:

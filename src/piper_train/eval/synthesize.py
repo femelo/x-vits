@@ -97,6 +97,8 @@ def main() -> None:
     p.add_argument("--pp-voicing-fix", action="store_true",
                    help="voicing by phoneme type: voiceless consonants unvoiced, vowels and "
                    "sonorants voiced (pitch interpolated); use with --pp-durations sdp")
+    p.add_argument("--pp-unvoiced-styles", default="",
+                   help="comma-separated styles rendered fully unvoiced (vfrac 0, no pitch), e.g. whisper")
     p.add_argument("--dp-style-ckpt", type=Path,
                    help="style-conditioned duration predictor (train_dp_style best.pt); "
                    "the style comes from --pp-style (none = unspecified)")
@@ -146,12 +148,16 @@ def main() -> None:
         from ..prosody.predictor import ProsodyPredictor, text_hidden
 
         predictor = ProsodyPredictor.load(args.prosody_predictor, args.device)
-        t = [float(v) for v in args.pp_temperature.split(",")]
-        t_dur, t_pros = (t[0], t[0]) if len(t) == 1 else t
-        # per-channel noise scale: [duration, lf0, vfrac, energy]
-        pp_temp = torch.tensor([t_dur, t_pros, t_pros, t_pros], device=args.device).view(1, 4, 1)
-        g = [float(v) for v in args.pp_guidance.split(",")]
-        pp_guid = g[0] if len(g) == 1 else [g[0], g[1], g[1], g[1]]
+        # per-channel [duration, lf0, vfrac, energy(, effort)]: 1 value (all), 2 (duration,
+        # the rest) or 3 (duration, pitch+voicing, energy+effort)
+        def per_channel(s):
+            v = [float(x) for x in s.split(",")]
+            v = v * 3 if len(v) == 1 else v + v[1:] if len(v) == 2 else v
+            return [v[0], v[1], v[1]] + [v[2]] * (predictor.n_targets - 3)
+
+        pp_temp = torch.tensor(per_channel(args.pp_temperature), device=args.device).view(1, -1, 1)
+        g = per_channel(args.pp_guidance)
+        pp_guid = g[0] if len(set(g)) == 1 else g
         id_to_symbol = None
         if args.pp_max_dur or args.pp_final_stretch != 1.0 or args.pp_voiceless_fix or args.pp_voicing_fix:
             from ..prosody.predictor import fix_voiceless, fix_voicing, shape_durations
@@ -282,14 +288,23 @@ def main() -> None:
                     tok_s = np.array([strength[w] if w >= 0 else 0.0 for w in tok_w], np.float32)
                     p_st = p_st * tok_s
                     d_mul = np.power(d_mul, tok_s).astype(np.float32)
+                    from ..prosody.emphasis import param_energy
+
+                    e_log = param_energy(offs, template, args.emphasis_template_scale, sname) * tok_s
+                    t_log = param_energy(offs, template, args.emphasis_template_scale, sname, key="tilt") * tok_s
                 else:
                     e_np = emph[0].cpu().numpy()
                     rel = word_runs(e_np[0], e_np[1] if e_np.shape[0] > 1 else None)
                     p_st, d_mul = apply_template(rel, template, args.emphasis_template_scale)
+                    e_log = t_log = None
                 st_ = predictor.stats
                 lf0, vf = kw["prosody"][:, 0], kw["prosody"][:, 1]
                 shift = torch.from_numpy(p_st).to(lf0) * (math.log(2) / 12) / st_["lf0_std"]
                 kw["prosody"][:, 0] = torch.where(vf > 0.5, lf0 + shift, lf0)
+                if e_log is not None:  # louder on the emphasised word, peaking with the pitch
+                    kw["prosody"][:, 2] += torch.from_numpy(e_log).to(lf0) / st_["energy_std"]
+                if t_log is not None and kw["prosody"].size(1) > 3 and "tilt_std" in st_:  # more effort
+                    kw["prosody"][:, 3] += torch.from_numpy(t_log).to(lf0) / st_["tilt_std"]
                 with torch.no_grad():
                     logw = model.model_g.dp(x, x_mask, reverse=True, noise_scale=args.noise_scale_w,
                                             h_add=kw.pop("dp_cond", None))
@@ -306,6 +321,11 @@ def main() -> None:
                     kw["durations"], ids.tolist(), id_to_symbol,
                     args.pp_max_dur, args.pp_final_stretch,
                 )
+        if "prosody" in kw and args.pp_unvoiced_styles:
+            sname_ = row.get("category") if args.pp_style in ("auto", "label") else args.pp_style
+            if sname_ in args.pp_unvoiced_styles.split(","):
+                kw["prosody"][:, 0] = 0.0  # lf0: 0 = unvoiced
+                kw["prosody"][:, 1] = 0.0  # vfrac
         with torch.no_grad():
             audio = model(ids, lengths, scales, **kw).squeeze().float().cpu().numpy()
         wall = time.perf_counter() - t0

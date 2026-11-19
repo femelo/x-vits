@@ -28,7 +28,7 @@ import torch
 from scipy.optimize import least_squares
 
 from ..eval.phonemize import PiperPhonemizer
-from .emphasis import parse_marked, shape_logdur, shape_pitch, token_word_index, tonic_offsets
+from .emphasis import parse_marked, shape_energy, shape_logdur, shape_pitch, token_word_index, tonic_offsets
 from .prominence import vowel_duration_means, word_prominence
 
 K = np.arange(-8, 15)
@@ -37,6 +37,8 @@ DUR_NAMES = ["C", "B", "mu", "s_l", "s_r"]
 # smooth release (tau >= 1.5 tokens); duration rise only a few tokens wide
 PITCH_X0, PITCH_LO, PITCH_HI = [2.5, 1, 1.5, 2.5, 1.5, 5, 2], [0, -3, 0.3, 0.3, 0, 0, 1.5], [8, 4, 6, 8, 5, 12, 4]
 DUR_X0, DUR_LO, DUR_HI = [0.4, 0.2, -1, 1, 3], [-0.5, -1, -4, 0.3, 0.3], [1.5, 1.5, 4, 2.5, 10]
+# energy in log-magnitude units (1.0 ~ 8.7 dB): word-wide C, bump B; smooth (s >= 1 token)
+ENERGY_X0, ENERGY_LO, ENERGY_HI = [0.3, 0.3, 0, 2, 3], [-1, -1, -4, 1, 1], [2, 2, 4, 6, 10]
 
 
 def _fit(y, n, fn, names, x0, lo, hi, min_count=15):
@@ -51,7 +53,7 @@ def _fit(y, n, fn, names, x0, lo, hi, min_count=15):
 
 
 def collect(utts, rows, pz, marked=None, style_of=None, z_thr=1.0):
-    """rows: [(utt, row)] -> {group: {emph?: {k: ([pitch], [logdur])}}}"""
+    """rows: [(utt, row)] -> {group: {emph?: {k: ([pitch], [logdur], [energy], [tilt])}}}  (tilt: diagnostics only)"""
     inv = {v: k for k, v in pz.id_map.items()}
     vmeans = vowel_duration_means(utts, [(u, r["phoneme_ids"]) for u, r in rows], inv)
     data = {}
@@ -76,11 +78,16 @@ def collect(utts, rows, pz, marked=None, style_of=None, z_thr=1.0):
         st = 12 * np.nan_to_num(x["lf0"]) / np.log(2)
         v = x["vfrac"] > 0.5
         d = np.log(x["dur"].astype(float) + 0.5)
+        en = np.asarray(x["energy"], float)  # log spectral magnitude per token
+        ti = np.asarray(x["tilt"], float) if "tilt" in x else None  # vocal effort
         twa = np.array(tw)
         valid = twa >= 0
         if not (v & valid).any():
             continue
         med, dm = np.median(st[v & valid]), d[valid].mean()
+        has = valid & (x["dur"] > 0)  # tokens with frames carry a measured energy
+        em = en[has].mean() if has.any() else 0.0
+        tm = ti[has].mean() if ti is not None and has.any() else 0.0
         off = tonic_offsets(ids, tw, inv)
         groups = ["all"] + ([style_of(u)] if style_of else [])
         for wi, f in enumerate(flags):
@@ -89,36 +96,45 @@ def collect(utts, rows, pz, marked=None, style_of=None, z_thr=1.0):
                 if k is None or k < K[0] or k > K[-1]:
                     continue
                 for g in groups:
-                    e = data.setdefault(g, {m: {kk: ([], []) for kk in K} for m in (True, False)})
+                    e = data.setdefault(g, {m: {kk: ([], [], [], []) for kk in K} for m in (True, False)})
                     if v[p]:
                         e[bool(f)][k][0].append(st[p] - med)
                     e[bool(f)][k][1].append(d[p] - dm)
+                    if has[p]:
+                        e[bool(f)][k][2].append(en[p] - em)
+                        if ti is not None:
+                            e[bool(f)][k][3].append(ti[p] - tm)
     return data
 
 
 def profiles(e):
+    """Emphasised minus non-emphasised mean per offset: pitch, log duration, energy, tilt; counts."""
     mean = lambda a, fill: np.array([np.mean(a[k]) if len(a[k]) else fill for k in K])
-    mp = mean({k: e[True][k][0] for k in K}, np.nan)
-    up = mean({k: e[False][k][0] for k in K}, 0.0)
-    md = mean({k: e[True][k][1] for k in K}, np.nan)
-    ud = mean({k: e[False][k][1] for k in K}, 0.0)
+    diff = lambda i: mean({k: e[True][k][i] for k in K}, np.nan) - mean({k: e[False][k][i] for k in K}, 0.0)
     n = np.array([len(e[True][k][1]) for k in K])
-    return mp - up, md - ud, n
+    return diff(0), diff(1), diff(2), diff(3), n
 
 
 def fit_all(data, min_style_words=40):
     if "all" not in data:
         raise SystemExit("no emphasised words found: nothing to fit")
-    dp, dd, n = profiles(data["all"])
+    dp, dd, de_, dt_, n = profiles(data["all"])
     pp, pe = _fit(dp, n, shape_pitch, PITCH_NAMES, PITCH_X0, PITCH_LO, PITCH_HI)
     pd, de = _fit(dd, n, shape_logdur, DUR_NAMES, DUR_X0, DUR_LO, DUR_HI)
     if pp is None or pd is None:
         raise SystemExit("too few emphasised words to fit a template")
+    # energy (log magnitude): same form as duration, a word-wide offset plus a bump
+    pen, ee = _fit(de_, n, shape_energy, DUR_NAMES, ENERGY_X0, ENERGY_LO, ENERGY_HI)
+    # No vocal-effort (tilt) shape: on Thorsten it came out negative (stressed vowels
+    # tend to be darker vowels, so it measures vowel quality, not effort) and had
+    # no effect on intelligibility. Effort comes from the predictor instead.
     out = {"anchor": "stressed vowel, token offsets", "fit_range": [int(K[0]), int(K[-1])],
            "pitch": pp, "dur": pd, "n_words": int(n[K == 0][0]),
            "rmse_pitch_st": round(pe, 2), "rmse_logdur": round(de, 3), "styles": {}}
+    if pen is not None:
+        out["energy"], out["rmse_energy"] = pen, round(ee, 3)
     for g in sorted(k for k in data if k != "all"):
-        dp, dd, n = profiles(data[g])
+        dp, dd, de_s_, dt_s_, n = profiles(data[g])
         nw = int(n[K == 0][0])
         if nw < min_style_words:
             continue
@@ -131,6 +147,11 @@ def fit_all(data, min_style_words=40):
             continue
         entry = {"pitch": dict(pp, **a), "dur": dict(pd, **b), "n_words": nw,
                  "rmse_pitch_st": round(pe_s, 2), "rmse_logdur": round(de_s, 3)}
+        if pen is not None:
+            fe = lambda k, q: shape_energy(k, dict(pen, C=q["C"], B=q["B"]))
+            c, ee_s = _fit(de_s_, n, fe, ["C", "B"], [pen["C"], pen["B"]], ENERGY_LO[:2], ENERGY_HI[:2])
+            if c is not None:
+                entry["energy"], entry["rmse_energy"] = dict(pen, **c), round(ee_s, 3)
         if entry["pitch"]["A"] < 0.5 * pp["A"]:  # the shared shape does not fit this style's pitch
             entry["pitch"] = dict(pp)
             entry["pitch_from"] = "pooled (style shape does not fit)"
@@ -168,8 +189,10 @@ def main():
     out["source"] = "human marks" if marked is not None else f"acoustic prominence (z >= {a.z_thr})"
     a.out.parent.mkdir(parents=True, exist_ok=True)
     json.dump(out, open(a.out, "w"), indent=1)
+    loud = (f", loudness {20 / np.log(10) * (out['energy']['C'] + out['energy']['B']):+.1f} dB at the peak"
+            if "energy" in out else "")
     print(f"{out['source']}: {out['n_words']} words; pitch peak {out['pitch']['A']:+.2f} st, "
-          f"stressed-syllable lengthening x{np.exp(out['dur']['B']):.2f}; styles: {list(out['styles'])}")
+          f"stressed-syllable lengthening x{np.exp(out['dur']['B']):.2f}{loud}; styles: {list(out['styles'])}")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import torch
 
-from .features import N_CHANNELS, feature_matrix
+from .features import feature_matrix, n_channels
 
 
 def main() -> None:
@@ -32,7 +32,7 @@ def main() -> None:
 
     a.out_dir.mkdir(parents=True, exist_ok=True)
     cfg = json.loads((a.dataset_dir / "config.json").read_text(encoding="utf-8"))
-    cfg["prosody"] = {**stats, "channels": N_CHANNELS}
+    cfg["prosody"] = {**stats, "channels": n_channels(stats)}
     (a.out_dir / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=4), encoding="utf-8")
 
     n = skipped = 0

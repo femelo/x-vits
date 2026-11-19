@@ -1,12 +1,13 @@
 """Stage 3: flow-matching prosody predictor.
 
-Generates, per Piper token, four jointly-distributed values from the frozen text
+Generates, per Piper token, jointly-distributed values from the frozen text
 encoder output ``x`` (``enc_p`` hidden states, [b, 192, t]):
 
   0  log(1 + frames), standardised      (duration; replaces the SDP)
   1  log-F0, standardised (0 unvoiced)  \
-  2  voiced fraction                     > the stage 2 prosody input
-  3  log energy, standardised           /
+  2  voiced fraction                     |  the stage 2 prosody input
+  3  log energy, standardised            |  (see features.py)
+  4  vocal effort (spectral tilt)       /   only with a tilt-aware extraction
 
 Sampling is an OT-CFM ODE from Gaussian noise, so prosody is a distribution
 (the same sentence can be said several ways) rather than a regression mean,
@@ -26,9 +27,9 @@ from torch import nn
 
 from ..vits import modules
 from ..vits.cfm import OTCFM, sinusoidal_embedding
-from .features import feature_matrix
+from .features import feature_matrix, n_channels
 
-N_TARGETS = 4
+N_TARGETS = 4  # legacy default; a predictor's own count is ``n_targets``
 
 
 class ProsodyEstimator(nn.Module):
@@ -43,9 +44,11 @@ class ProsodyEstimator(nn.Module):
         p_dropout: float = 0.1,
         n_styles: int = 0,
         pos_features: bool = False,
+        n_targets: int = N_TARGETS,
     ):
         super().__init__()
         self.hidden = hidden
+        self.n_targets = n_targets
         # Optional explicit position: distance (tokens) to the sentence start and
         # end, so phrase-final behaviour (question rises, final lengthening) does
         # not have to be inferred from the text encoder alone.
@@ -56,7 +59,7 @@ class ProsodyEstimator(nn.Module):
         self.time_mlp = nn.Sequential(
             nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, hidden)
         )
-        self.in_proj = nn.Conv1d(N_TARGETS, hidden, 1)
+        self.in_proj = nn.Conv1d(n_targets, hidden, 1)
         self.cond_proj = nn.Conv1d(text_channels, hidden, 1)
         self.wn = modules.WN(
             hidden, kernel_size, 2, n_wn_layers, gin_channels=hidden, p_dropout=p_dropout
@@ -67,7 +70,7 @@ class ProsodyEstimator(nn.Module):
             )
             for _ in range(n_attn_layers)
         )
-        self.out = nn.Conv1d(hidden, N_TARGETS, 1)
+        self.out = nn.Conv1d(hidden, n_targets, 1)
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
@@ -138,7 +141,7 @@ class _MultiGuided(nn.Module):
 
 
 class ProsodyPredictor(nn.Module):
-    """OT-CFM over the 4 per-token targets.  ``stats`` holds the dataset
+    """OT-CFM over the per-token targets (duration + prosody channels).  ``stats`` holds the dataset
     normalisation (prosody.pt stats plus logdur_mean/std).  ``styles`` is an
     optional list of utterance style labels (e.g. Expresso's happy/sad/...);
     without it the predictor is unconditional, as before."""
@@ -153,7 +156,8 @@ class ProsodyPredictor(nn.Module):
         self.kw = dict(estimator_kw)
         est_kw = dict(estimator_kw)
         est_kw["text_channels"] = est_kw.get("text_channels", 192) + token_feats
-        self.cfm = OTCFM(ProsodyEstimator(n_styles=len(self.styles), **est_kw))
+        self.n_targets = 1 + n_channels(self.stats)  # duration + the prosody channels
+        self.cfm = OTCFM(ProsodyEstimator(n_styles=len(self.styles), n_targets=self.n_targets, **est_kw))
 
     def _cond(self, x_text, feats):
         if self.token_feats == 0:
@@ -172,20 +176,20 @@ class ProsodyPredictor(nn.Module):
 
     # ---- target encoding -------------------------------------------------
     def encode_targets(self, utt: dict) -> np.ndarray:
-        """prosody.pt utterance -> [n_tok, 4] float32 (standardised)."""
+        """prosody.pt utterance -> [n_tok, n_targets] float32 (standardised)."""
         s = self.stats
         ld = (np.log1p(utt["dur"].astype(np.float32)) - s["logdur_mean"]) / s["logdur_std"]
         return np.concatenate([ld[:, None], feature_matrix(utt, s)], axis=1).astype(np.float32)
 
     def decode(self, y: torch.Tensor, mask: torch.Tensor):
-        """y: [b, 4, T] -> (durations [b, T] frames >= 1, prosody [b, 3, T])."""
+        """y: [b, n_targets, T] -> (durations [b, T] frames >= 1, prosody [b, n_targets - 1, T])."""
         s = self.stats
         logdur = y[:, 0] * s["logdur_std"] + s["logdur_mean"]
         dur = torch.clamp_min(torch.round(torch.expm1(logdur)), 1.0) * mask.squeeze(1)
         vfrac = y[:, 2:3].clamp(0.0, 1.0)
         lf0 = y[:, 1:2] * (vfrac > 0.5)  # unvoiced tokens: "no pitch" (0)
-        energy = y[:, 3:4]
-        pros = torch.cat([lf0, vfrac, energy], dim=1) * mask
+        rest = y[:, 3:]  # energy (, vocal effort)
+        pros = torch.cat([lf0, vfrac, rest], dim=1) * mask
         return dur, pros
 
     # ---- training / sampling ---------------------------------------------
@@ -219,12 +223,12 @@ class ProsodyPredictor(nn.Module):
         if feats is not None and self.token_feats and feats_guidance != 1.0:
             w = torch.as_tensor(guidance, dtype=x_text.dtype, device=x_text.device)
             w = w.view(1, -1, 1) if w.dim() else w
-            noise = torch.randn(x_text.size(0), N_TARGETS, x_text.size(2), device=x_text.device, dtype=x_text.dtype)
+            noise = torch.randn(x_text.size(0), self.n_targets, x_text.size(2), device=x_text.device, dtype=x_text.dtype)
             cfm = OTCFM(_MultiGuided(self.cfm.estimator, w if style is not None else 1.0, feats_guidance, cond0))
             return cfm.sample(x_text, mask, n_steps=n_steps, temperature=temperature, noise=noise,
                               solver=solver, g=style)
         noise = torch.randn(
-            x_text.size(0), N_TARGETS, x_text.size(2), device=x_text.device, dtype=x_text.dtype
+            x_text.size(0), self.n_targets, x_text.size(2), device=x_text.device, dtype=x_text.dtype
         )
         cfm = self.cfm
         w = torch.as_tensor(guidance, dtype=x_text.dtype, device=x_text.device)

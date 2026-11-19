@@ -20,10 +20,21 @@ class BundleTest(unittest.TestCase):
             self.assertTrue(Path(q.voice).is_absolute())  # relative paths resolve next to xvits.json
             a = q.synth_args(style="happy", emphasis="predicted")
             self.assertIn("--prominence-student", a)
-            self.assertEqual(a[a.index("--pp-temperature") + 1], "0.8,0.9")  # per-style temperature
-            self.assertEqual(a[a.index("--noise-scale-w") + 1], "0.4")       # style SDP defaults
+            self.assertEqual(a[a.index("--pp-temperature") + 1], "0.8,0.9,1.0")  # per-style temperature
+            self.assertEqual(a[a.index("--noise-scale-w") + 1], "0.4")           # style SDP defaults
+            self.assertNotIn("--pp-unvoiced-styles", a)
             self.assertNotIn("--prominence-student", q.synth_args(emphasis="marked"))
             self.assertNotIn("--emphasis-template", q.synth_args(emphasis="none"))
+            w = Bundle(name="v", config="c", voice="v", predictor="p", styles=["whisper"],
+                       defaults={"unvoiced_styles": ["whisper"]}).synth_args(style="label")
+            self.assertEqual(w[w.index("--pp-unvoiced-styles") + 1], "whisper")
+
+    def test_per_channel(self):
+        from xvits.runtime import per_channel
+
+        self.assertEqual(per_channel("0.5"), [0.5] * 4)
+        self.assertEqual(per_channel("0.8,0.7"), [0.8, 0.7, 0.7, 0.7])
+        self.assertEqual(per_channel("0.8,0.7,1.0"), [0.8, 0.7, 0.7, 1.0])  # duration, pitch+voicing, energy
 
 
 class InterpTest(unittest.TestCase):

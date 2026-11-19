@@ -220,6 +220,23 @@ def shape_logdur(k, p):
     return p["C"] + p["B"] * _asym_bump(k, p["mu"], p["s_l"], p["s_r"])
 
 
+def shape_energy(k, p):
+    """Emphasis log-energy offset: word-wide C plus an asymmetric bump B (same form as duration)."""
+    return shape_logdur(k, p)
+
+
+def param_energy(offsets, params, scale=1.0, style=None, key="energy"):
+    """Per-token log-energy offset (``key="tilt"``: vocal-effort offset) of the
+    emphasised words from a fitted template; 0 where not emphasised or when the
+    template has no such shape (older fits)."""
+    p = params.get("styles", {}).get(style, params) if style else params
+    e = p.get(key, params.get(key))
+    if e is None:
+        return np.zeros(len(offsets), np.float32)
+    k = np.nan_to_num(offsets, nan=0.0)
+    return np.where(np.isnan(offsets), 0.0, scale * shape_energy(k, e)).astype(np.float32)
+
+
 # sonorants (besides vowels) that can carry lengthening without distortion
 SONORANTS = set("mnŋɲɴlɫɹrɾɽʀʁjwʋɥʎʟː")
 

@@ -17,7 +17,11 @@ import torch
 import torchaudio
 
 
-def transcribe(wavs, model_name: str, device: str, batch_size: int):
+def default_model(language: str) -> str:
+    return "openai/whisper-small.en" if language == "en" else "openai/whisper-large-v3-turbo"
+
+
+def transcribe(wavs, model_name: str, device: str, batch_size: int, language: str = "en"):
     from transformers import pipeline
 
     asr = pipeline(
@@ -26,6 +30,8 @@ def transcribe(wavs, model_name: str, device: str, batch_size: int):
         device=device,
         chunk_length_s=30,
     )
+    # English-only checkpoints (*.en) take no language; multilingual ones are pinned to it
+    gen = {} if model_name.endswith(".en") else {"generate_kwargs": {"language": language, "task": "transcribe"}}
     out = {}
     for i in range(0, len(wavs), batch_size):
         batch = []
@@ -35,16 +41,20 @@ def transcribe(wavs, model_name: str, device: str, batch_size: int):
             if sr != 16000:
                 wav = torchaudio.functional.resample(wav, sr, 16000)
             batch.append({"raw": wav.numpy(), "sampling_rate": 16000})
-        for w, res in zip(wavs[i : i + batch_size], asr(batch, batch_size=batch_size)):
+        for w, res in zip(wavs[i : i + batch_size], asr(batch, batch_size=batch_size, **gen)):
             out[Path(w).name] = res["text"]
     return out
 
 
-def compute_errors(references, hypotheses):
+def compute_errors(references, hypotheses, language: str = "en"):
     """references/hypotheses: dict name -> text. Returns (summary, per-file)."""
-    from transformers.models.whisper.english_normalizer import EnglishTextNormalizer
+    from transformers.models.whisper.english_normalizer import BasicTextNormalizer, EnglishTextNormalizer
 
-    norm = EnglishTextNormalizer({})
+    if language == "en":
+        norm = EnglishTextNormalizer({})
+    else:  # lowercase, drop punctuation, split hyphenated words
+        basic = BasicTextNormalizer()
+        norm = lambda s: basic(s.replace("-", " "))
     names = sorted(references)
     refs = [norm(references[n]) for n in names]
     hyps = [norm(hypotheses[n]) for n in names]
@@ -63,11 +73,13 @@ def compute_errors(references, hypotheses):
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--wav-dir", type=Path, required=True)
-    p.add_argument("--model", default="openai/whisper-small.en")
+    p.add_argument("--language", default="en", help="ISO code, e.g. de (default: en)")
+    p.add_argument("--model", help="default: whisper-small.en for en, whisper-large-v3-turbo otherwise")
     p.add_argument("--device", default="cpu")
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--out", type=Path, help="default: <wav-dir>/wer.json")
     args = p.parse_args()
+    args.model = args.model or default_model(args.language)
 
     manifest = [
         json.loads(l)
@@ -75,8 +87,8 @@ def main() -> None:
         if l.strip()
     ]
     refs = {m["wav"]: m["text"] for m in manifest}
-    hyps = transcribe([args.wav_dir / n for n in refs], args.model, args.device, args.batch_size)
-    summary, per_file = compute_errors(refs, hyps)
+    hyps = transcribe([args.wav_dir / n for n in refs], args.model, args.device, args.batch_size, args.language)
+    summary, per_file = compute_errors(refs, hyps, args.language)
     result = {
         **summary,
         "asr_model": args.model,

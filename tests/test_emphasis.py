@@ -100,6 +100,15 @@ class EmphasisTest(unittest.TestCase):
         p3, _ = apply_param_template(off, tpl, style="unknown")  # falls back to pooled
         self.assertAlmostEqual(float(p3[2]), 2.0, places=5)
 
+        from piper_train.prosody.emphasis import param_energy
+
+        self.assertTrue((param_energy(off, tpl) == 0).all())  # older templates: no energy shape
+        tpl["energy"] = {"C": 0.1, "B": 0.4, "mu": 0.0, "s_l": 1.0, "s_r": 1.0}
+        e = param_energy(off, tpl, scale=1.5)
+        self.assertAlmostEqual(float(e[2]), 1.5 * 0.5, places=5)  # word offset + bump at the vowel
+        self.assertEqual(float(e[5]), 0.0)                        # not emphasised
+        self.assertAlmostEqual(float(param_energy(off, tpl, style="x")[2]), 0.5, places=5)  # style w/o energy -> pooled
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,7 +59,7 @@ def make_batch(rows, targets, device, styles=None, p_drop=0.0, emph=None, e_drop
     emph: {utt: per-token emphasis}; zeroed per utterance with prob e_drop."""
     n = max(len(ids) for _, ids in rows)
     ids = torch.zeros(len(rows), n, dtype=torch.long)
-    y = torch.zeros(len(rows), 4, n)
+    y = torch.zeros(len(rows), next(iter(targets.values())).shape[1], n)
     lengths = torch.LongTensor([len(i) for _, i in rows])
     for b, (utt, pid) in enumerate(rows):
         ids[b, : len(pid)] = torch.LongTensor(pid)

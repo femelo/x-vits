@@ -6,7 +6,7 @@ Stages (each writes ``<stage>/done.json``; finished stages are skipped on rerun,
 
   data        split into train/dev, strip *emphasis* marks, Piper preprocessing
   finetune    fine-tune the base checkpoint on the voice          (skippable)
-  prosody     stage 1: per-token duration / pitch / energy targets
+  prosody     stage 1: per-token duration / pitch / energy / vocal-effort targets
   voice       stage 2(+5): fine-tune with prosody conditioning of the prior
   predictor   stage 3: flow-matching pitch/energy(/duration) predictor
   durations   style-conditioned duration predictor            (needs styles)
@@ -94,6 +94,12 @@ def last_ckpt(root: Path) -> Path:
     if not cks:
         raise SystemExit(f"no checkpoint under {root}")
     return cks[-1]
+
+
+def data_language(config: str) -> str:
+    """ISO language of the voice from its eSpeak voice ("en-us" -> "en", "de" -> "de")."""
+    voice = json.loads(Path(config).read_text(encoding="utf-8")).get("espeak", {}).get("voice", "en-us")
+    return voice.split("-")[0].split("_")[0]
 
 
 def read_marks(path: Optional[Path]) -> Dict[str, str]:
@@ -190,8 +196,9 @@ def stage_voice(run: Run, pros, ft):
         return info
     a, d = run.a, run.d("voice")
     extra = ["--prosody-frame"] if a.frame_prosody else []
+    cfg = json.loads((Path(pros["train_dataset"]) / "config.json").read_text(encoding="utf-8"))
     run.sh("voice", "piper_train", "--dataset-dir", pros["train_dataset"], "--pretrained-checkpoint", ft["ckpt"],
-           "--prosody-channels", 3, *extra, "--max_epochs", a.voice_epochs, "--checkpoint-epochs", a.voice_epochs,
+           "--prosody-channels", cfg["prosody"]["channels"], *extra, "--max_epochs", a.voice_epochs, "--checkpoint-epochs", a.voice_epochs,
            "--default_root_dir", d, *run.train_args())
     return run.finish("voice", {"ckpt": str(last_ckpt(d)), "frame_prosody": bool(a.frame_prosody)})
 
@@ -279,21 +286,47 @@ def stage_template(run: Run, data, pros):
     return run.finish("template", {"json": str(d / "emphasis_template.json")})
 
 
-def stage_bundle(run: Run, data, ft, voice, pred, durs, prom, tpl):
+def unvoiced_styles(prosody_pt: str, style_regex: str, ratio: float = 0.2) -> List[str]:
+    """Styles whose recordings are (nearly) unvoiced, e.g. whispering: duration-weighted
+    voiced fraction below ``ratio`` x the median over styles. Rendering them with
+    voicing forced off avoids a half-voiced buzz."""
+    import numpy as np
+    import torch
+
+    rx, acc = re.compile(style_regex), {}
+    for utt, v in torch.load(prosody_pt, map_location="cpu", weights_only=False)["utts"].items():
+        m = rx.search(utt)
+        if m:
+            d = np.asarray(v["dur"], float)
+            s = acc.setdefault(m.group(1), [0.0, 0.0])
+            s[0] += float((np.asarray(v["vfrac"], float) * d).sum())
+            s[1] += float(d.sum())
+    frac = {k: a / max(b, 1e-9) for k, (a, b) in acc.items()}
+    if len(frac) < 2:
+        return []
+    med = float(np.median(list(frac.values())))
+    out = sorted(k for k, f in frac.items() if f < ratio * med)
+    _LOG.info("voiced fraction per style: %s -> unvoiced: %s",
+              {k: round(f, 3) for k, f in sorted(frac.items())}, out or "none")
+    return out
+
+
+def stage_bundle(run: Run, data, ft, pros, voice, pred, durs, prom, tpl):
     if (info := run.done("bundle")):
         return info
     from .bundle import Bundle
 
     a, d = run.a, run.d("bundle")
-    styles = []
+    styles, defaults = [], {}
     if a.style_regex:
         import torch
 
         styles = list(torch.load(pred["ckpt"], map_location="cpu", weights_only=False).get("styles") or [])
+        defaults["unvoiced_styles"] = unvoiced_styles(str(Path(pros["all"]).parent / "train.pt"), a.style_regex)
     b = Bundle(
         name=a.name or a.out.name, config=data["config"], voice=voice["ckpt"], baseline=ft["ckpt"],
         predictor=pred["ckpt"], durations=durs.get("ckpt"), prominence=prom["ckpt"], template=tpl["json"],
-        styles=styles, frame_prosody=voice.get("frame_prosody", False),
+        styles=styles, frame_prosody=voice.get("frame_prosody", False), defaults=defaults,
     )
     path = b.save(d / "xvits.json")
     return run.finish("bundle", {"bundle": str(path)})
@@ -319,7 +352,8 @@ def stage_eval(run: Run, data, pros, bundle):
         rep = {k: m[k] for k in ("f0_corr", "f0_rmse_st", "f0_std_ratio", "dur_corr", "rate_ratio") if k in m}
         if not a.no_mos:
             run.sh("eval", "piper_train.eval.score_utmos", "--wav-dir", o, "--device", "cuda" if a.gpu else "cpu")
-            run.sh("eval", "piper_train.eval.score_wer", "--wav-dir", o, "--device", "cuda" if a.gpu else "cpu")
+            run.sh("eval", "piper_train.eval.score_wer", "--wav-dir", o, "--device", "cuda" if a.gpu else "cpu",
+                   "--language", data_language(data["config"]))
             rep["utmos"] = json.loads((o / "utmos.json").read_text())["utmos_mean"]
             rep["wer"] = json.loads((o / "wer.json").read_text())["wer"]
         report[name] = rep
@@ -373,6 +407,10 @@ def main(argv: Optional[List[str]] = None):
     p.add_argument("--seed", type=int, default=1234)
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    # stage records and the bundle store paths; keep them valid from any working directory
+    for k in ("dataset", "base_ckpt", "base_config", "out", "marked", "dev_list"):
+        if getattr(a, k) is not None:
+            setattr(a, k, getattr(a, k).resolve())
     if a.base_config is None:
         a.base_config = a.base_ckpt.parent / "config.json"
         if not a.base_config.exists():
@@ -404,7 +442,7 @@ def main(argv: Optional[List[str]] = None):
     if not go("template"): return
     tpl = stage_template(run, data, pros)
     if not go("bundle"): return
-    bundle = stage_bundle(run, data, ft, voice, pred, durs, prom, tpl)
+    bundle = stage_bundle(run, data, ft, pros, voice, pred, durs, prom, tpl)
     if not go("eval"): return
     stage_eval(run, data, pros, bundle)
     if a.export and go("export"):

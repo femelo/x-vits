@@ -220,7 +220,8 @@ def export(bundle_path: Path, out: Path, verify: bool = False, text: str = None)
     # acoustic
     w_ceil = torch.full((1, 1, ids.size(1)), 3.0) * x_mask
     n_frames = int(w_ceil.sum())
-    pros = torch.zeros(1, 3, ids.size(1)); pros[:, 1] = 1.0
+    n_pros = g.prosody_channels  # 3, or 4 with the vocal-effort channel
+    pros = torch.zeros(1, n_pros, ids.size(1)); pros[:, 1] = 1.0
     noise = torch.randn(1, g.inter_channels, n_frames) * 0.667
     _export(Acoustic(g), (x, x_mask, pros, w_ceil, noise), out / "acoustic.onnx",
             ["x", "x_mask", "prosody", "w_ceil", "noise"], ["audio"],
@@ -230,7 +231,7 @@ def export(bundle_path: Path, out: Path, verify: bool = False, text: str = None)
     est = onnx_safe(pred.cfm.estimator).eval()
     has_style = est.style is not None
     cond = pred._cond(x, None)
-    x_t = torch.randn(1, 4, ids.size(1))
+    x_t = torch.randn(1, pred.n_targets, ids.size(1))
     t = torch.tensor([0.3])
     gid = torch.LongTensor([0])
     _export(PredictorStep(est, has_style), (x_t, x_mask, cond, t, gid), out / "predictor.onnx",
@@ -270,7 +271,8 @@ def export(bundle_path: Path, out: Path, verify: bool = False, text: str = None)
         "name": b.name, "files": files, "config": "config.json",
         "sample_rate": json.load(open(b.config))["audio"]["sample_rate"],
         "hop_length": 256, "inter_channels": g.inter_channels, "text_channels": C,
-        "predictor": {"stats": pred.stats, "styles": pred.styles, "token_feats": pred.token_feats},
+        "predictor": {"stats": pred.stats, "styles": pred.styles, "token_feats": pred.token_feats,
+                      "n_targets": pred.n_targets},
         "durations_styles": styles_dp if b.durations else [],
         "frame_prosody": g.prosody_frame is not None, "defaults": b.defaults,
     }
@@ -306,7 +308,7 @@ def verify_export(out: Path, b, text: str, tol: float = 1e-3):
     sess = lambda n: ort.InferenceSession(str(out / n), providers=["CPUExecutionProvider"])
 
     # frame interpolation: vectorised vs reference
-    pros = torch.randn(1, 3, ids.size(1)); pros[:, 1] = (torch.rand(1, ids.size(1)) > 0.3).float()
+    pros = torch.randn(1, g.prosody_channels, ids.size(1)); pros[:, 1] = (torch.rand(1, ids.size(1)) > 0.3).float()
     w = torch.randint(0, 6, (1, 1, ids.size(1))).float()
     nf = int(w.sum())
     ref = vm.interp_prosody_frames(pros, w, nf)
@@ -381,11 +383,16 @@ def torch_reference(b, g, trace):
         cfm = pred.cfm
         if style is not None and bool((w != 1.0).any()):
             cfm = OTCFM(_Guided(pred.cfm.estimator, w.view(1, -1, 1) if w.dim() else w))
-        y = cfm.sample(cond, x_mask, n_steps=trace["steps"], temperature=t(trace["temperature"]).view(1, 4, 1),
+        y = cfm.sample(cond, x_mask, n_steps=trace["steps"], temperature=t(trace["temperature"]).view(1, -1, 1),
                        noise=t(trace["noise0"]), solver="midpoint", g=style)
         _, pros = pred.decode(y, x_mask)
         shift = t(trace["p_st"]) * (math.log(2) / 12) / pred.stats["lf0_std"]
         pros[:, 0] = torch.where(pros[:, 1] > 0.5, pros[:, 0] + shift[None], pros[:, 0])
+        pros[:, 2] += t(trace["e_log"])[None] / pred.stats["energy_std"]
+        if pros.size(1) > 3:
+            pros[:, 3] += t(trace["t_log"])[None] / pred.stats["tilt_std"]
+        if trace["unvoiced"]:
+            pros[:, :2] = 0.0
         diff_p = float((pros - t(trace["prosody"])).abs().max())
         _LOG.info("verify predictor ODE + decode + emphasis: max |diff| %.2e", diff_p)
         logw = Durations(g)(x, x_mask, t(trace["z"]), t(trace["h_add"]))

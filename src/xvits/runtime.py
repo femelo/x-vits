@@ -18,6 +18,18 @@ import numpy as np
 N_TARGETS = 4
 
 
+def per_channel(s: str, n_targets: int = N_TARGETS):
+    """'a' | 'dur,rest' | 'dur,pitch,energy' -> [duration, lf0, vfrac, energy(, effort)];
+    the vocal-effort channel (5 targets) follows the energy value."""
+    v = [float(x) for x in s.split(",")]
+    if len(v) == 1:
+        v = v * 3
+    elif len(v) == 2:
+        v = v + v[1:]
+    dur, pitch, energy = v
+    return [dur, pitch, pitch] + [energy] * (n_targets - 3)
+
+
 class XVits:
     def __init__(self, model_dir: Path, providers=("CPUExecutionProvider",)):
         import onnxruntime as ort
@@ -36,6 +48,7 @@ class XVits:
         self.inv = {v: k for k, v in self.pz.id_map.items()}
         self.pstats = self.m["predictor"]["stats"]
         self.styles = self.m["predictor"]["styles"]
+        self.n_targets = self.m["predictor"].get("n_targets", N_TARGETS)
         self.d = self.m["defaults"]
 
     @classmethod
@@ -73,11 +86,11 @@ class XVits:
 
     def _sample_prosody(self, x, mask, style, temp, guidance, steps, rng):
         """OT-CFM ODE (cosine schedule, midpoint) with style guidance, as in
-        ``ProsodyPredictor.sample``; returns (y [1, 4, T], initial noise)."""
+        ``ProsodyPredictor.sample``; returns (y [1, n_targets, T], initial noise)."""
         cond = x
         if self.m["predictor"]["token_feats"]:
             cond = np.concatenate([x, np.zeros((1, self.m["predictor"]["token_feats"], x.shape[2]), np.float32)], 1)
-        noise0 = rng.standard_normal((1, N_TARGETS, x.shape[2])).astype(np.float32)
+        noise0 = rng.standard_normal((1, self.n_targets, x.shape[2])).astype(np.float32)
         y = noise0 * temp * mask
         w = np.asarray(guidance, np.float32).reshape(1, -1, 1)
         guided = style is not None and bool((w != 1.0).any())
@@ -99,19 +112,22 @@ class XVits:
     def _decode(self, y, mask):
         vfrac = np.clip(y[:, 2:3], 0.0, 1.0)
         lf0 = y[:, 1:2] * (vfrac > 0.5)
-        return np.concatenate([lf0, vfrac, y[:, 3:4]], 1) * mask
+        return np.concatenate([lf0, vfrac, y[:, 3:]], 1) * mask  # energy (, vocal effort)
 
     def _emphasis(self, text, x, mask, ids, style, scale, mode):
-        """Per-token (pitch shift st, duration multiplier) from marks or the student."""
-        from piper_train.prosody.emphasis import apply_param_template, parse_marked, token_word_index, tonic_offsets
+        """Per-token (pitch shift st, duration multiplier, log-energy offset, effort offset)
+        from marks or the student."""
+        from piper_train.prosody.emphasis import (apply_param_template, param_energy, parse_marked,
+                                                  token_word_index, tonic_offsets)
 
         n = len(ids)
+        none = (np.zeros(n, np.float32), np.ones(n, np.float32), np.zeros(n, np.float32), np.zeros(n, np.float32))
         if mode == "none" or self.template is None:
-            return np.zeros(n, np.float32), np.ones(n, np.float32)
+            return none
         plain, flags = parse_marked(text)
         t_ids, tok_w = token_word_index(plain, self.pz)
         if t_ids != ids:
-            return np.zeros(n, np.float32), np.ones(n, np.float32)
+            return none
         strength = np.ones(len(flags))
         if not any(flags) and mode == "auto" and self.prom is not None:
             logits = self.prom.run(None, {"x": x, "x_mask": mask})[0][0]
@@ -128,7 +144,9 @@ class XVits:
         p_st, d_mul = apply_param_template(offs, self.template, scale, style,
                                            symbols=[self.inv.get(int(i), "?") for i in t_ids])
         tok_s = np.array([strength[w] if w >= 0 else 0.0 for w in tok_w], np.float32)
-        return p_st * tok_s, np.power(d_mul, tok_s).astype(np.float32)
+        e_log = param_energy(offs, self.template, scale, style) * tok_s
+        t_log = param_energy(offs, self.template, scale, style, key="tilt") * tok_s
+        return p_st * tok_s, np.power(d_mul, tok_s).astype(np.float32), e_log, t_log
 
     # ------------------------------------------------------------------
     def synthesize(self, text: str, style: Optional[str] = None, emphasis: str = "auto",
@@ -143,18 +161,23 @@ class XVits:
         ids = self.pz.ids(plain)
         x, mask = self.enc.run(None, {"ids": np.array([ids], np.int64), "lengths": np.array([len(ids)], np.int64)})
         sidx = self._style_index(style)
-        tt = [float(v) for v in d["style_temperature"].get(style, d["pp_temperature"]).split(",")]
-        t_dur, t_pros = (tt[0], tt[0]) if len(tt) == 1 else tt
-        temp = np.array([t_dur, t_pros, t_pros, t_pros], np.float32).reshape(1, 4, 1)
-        gg = [float(v) for v in d["pp_guidance"].split(",")]
-        guidance = gg[0] if len(gg) == 1 else [gg[0], gg[1], gg[1], gg[1]]
+        temp = np.array(per_channel(d["style_temperature"].get(style, d["pp_temperature"]), self.n_targets),
+                        np.float32).reshape(1, -1, 1)
+        gg = per_channel(d["pp_guidance"], self.n_targets)
+        guidance = gg[0] if len(set(gg)) == 1 else gg
         n_steps = int(steps or d["pp_steps"])
         y, noise0 = self._sample_prosody(x, mask, sidx, temp, guidance, n_steps, rng)
         pros = self._decode(y, mask)
-        p_st, d_mul = self._emphasis(text, x, mask, ids, style,
-                                     d["template_scale"] if emphasis_scale is None else emphasis_scale, emphasis)
+        p_st, d_mul, e_log, t_log = self._emphasis(text, x, mask, ids, style,
+                                            d["template_scale"] if emphasis_scale is None else emphasis_scale,
+                                            emphasis)
         shift = p_st * (math.log(2) / 12) / self.pstats["lf0_std"]
         pros[:, 0] = np.where(pros[:, 1] > 0.5, pros[:, 0] + shift[None], pros[:, 0])
+        pros[:, 2] += e_log[None] / self.pstats["energy_std"]  # louder on emphasis, with the pitch peak
+        if pros.shape[1] > 3:  # more vocal effort on emphasis
+            pros[:, 3] += t_log[None] / self.pstats["tilt_std"]
+        if style in d.get("unvoiced_styles", []):  # whispering: no voicing, no pitch
+            pros[:, :2] = 0.0
         # durations
         ch = x.shape[1]  # the SDP width equals the text encoder width
         h_add = np.zeros((1, ch, len(ids)), np.float32)
@@ -175,6 +198,7 @@ class XVits:
         if return_trace:
             return audio, {"ids": ids, "noise0": noise0, "temperature": temp.ravel().tolist(), "guidance": guidance,
                            "steps": n_steps, "style_index": sidx, "prosody": pros, "p_st": p_st,
+                           "e_log": e_log, "t_log": t_log, "unvoiced": style in d.get("unvoiced_styles", []),
                            "d_mul": d_mul, "z": z, "h_add": h_add, "noise": noise, "length_scale": ls}
         return audio
 
