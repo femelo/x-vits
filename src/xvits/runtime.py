@@ -163,18 +163,30 @@ class XVits:
     def synthesize(self, text: str, style: Optional[str] = None, emphasis: str = "auto",
                    seed: Optional[int] = None, emphasis_scale: Optional[float] = None,
                    length_scale: Optional[float] = None, steps: Optional[int] = None,
-                   return_trace: bool = False):
-        """steps: ODE steps of the prosody predictor (default 16; 4 is ~2.5x faster
-        on CPU and changes pitch by ~0.1 semitone on average)."""
+                   style_strength: float = 1.0, guidance: Optional[str] = None,
+                   temperature: Optional[str] = None, return_trace: bool = False):
+        """Text (``*word*`` marks force emphasis) -> float32 audio at ``sample_rate``.
+
+        style_strength: how far the style is exaggerated, relative to the voice's
+            default: 1 = default, 0 = the style without exaggeration, 2 = twice the
+            exaggeration.  Scales every channel of ``guidance`` around 1.
+        guidance: per-channel style exaggeration "timing,pitch,energy,effort"
+            (1 = none), overriding the voice's default; needs a style.
+        temperature: per-channel variety "timing,pitch,energy[,effort]"; higher is
+            livelier, lower is steadier.
+        emphasis_scale: multiplier of the emphasis shape (pitch peak, lengthening,
+            loudness) on emphasised words.
+        steps: ODE steps of the prosody predictor (default 16; 4 is ~2.5x faster
+            on CPU and changes pitch by ~0.1 semitone on average)."""
         d = self.d
         rng = np.random.default_rng(seed)
         plain = text.replace("*", "")
         ids = self.pz.ids(plain)
         x, mask = self.enc.run(None, {"ids": np.array([ids], np.int64), "lengths": np.array([len(ids)], np.int64)})
         sidx = self._style_index(style)
-        temp = np.array(per_channel(d["style_temperature"].get(style, d["pp_temperature"]), self.n_targets),
-                        np.float32).reshape(1, -1, 1)
-        gg = per_channel(d["pp_guidance"], self.n_targets)
+        temp_s = temperature or d["style_temperature"].get(style, d["pp_temperature"])
+        temp = np.array(per_channel(temp_s, self.n_targets), np.float32).reshape(1, -1, 1)
+        gg = [1.0 + style_strength * (g - 1.0) for g in per_channel(guidance or d["pp_guidance"], self.n_targets)]
         guidance = gg[0] if len(set(gg)) == 1 else gg
         n_steps = int(steps or d["pp_steps"])
         y, noise0 = self._sample_prosody(x, mask, sidx, temp, guidance, n_steps, rng)
@@ -234,11 +246,16 @@ def main(argv=None):
     p.add_argument("--emphasis-scale", type=float)
     p.add_argument("--length-scale", type=float)
     p.add_argument("--steps", type=int, help="prosody ODE steps (default 16; 4 is faster on CPU)")
+    p.add_argument("--style-strength", type=float, default=1.0,
+                   help="style exaggeration relative to the voice default (0 none, 1 default, 2 double)")
+    p.add_argument("--guidance", help='per-channel exaggeration "timing,pitch,energy,effort"')
+    p.add_argument("--temperature", help='per-channel variety "timing,pitch,energy[,effort]"')
     p.add_argument("--seed", type=int)
     p.add_argument("--out", type=Path, required=True)
     a = p.parse_args(argv)
     voice = XVits.from_pretrained(a.model)
-    audio = voice.synthesize(a.text, a.style, a.emphasis, a.seed, a.emphasis_scale, a.length_scale, a.steps)
+    audio = voice.synthesize(a.text, a.style, a.emphasis, a.seed, a.emphasis_scale, a.length_scale, a.steps,
+                             style_strength=a.style_strength, guidance=a.guidance, temperature=a.temperature)
     sf.write(a.out, audio, voice.sample_rate)
     print(f"wrote {a.out} ({len(audio) / voice.sample_rate:.2f} s)")
 

@@ -216,11 +216,12 @@ Example configs: [`configs/expresso_ex02.sh`](configs/expresso_ex02.sh) (English
 | | where | effect |
 |---|---|---|
 | style | `--style NAME` | one of the voice's styles; none gives a neutral mix |
-| style exaggeration | `pp_guidance` in `xvits.json` | `"timing,pitch,energy,effort"`; default `"1.0,2.0,4.0,1.0"` |
-| emphasis strength | `--emphasis-scale` | 1.0 = the average real emphasis; 1.5 is clearer |
+| style strength | `style_strength=` / `--style-strength` | one dial for the style exaggeration: 0 none, 1 the voice default, 2 double |
+| style exaggeration | `guidance=` / `--guidance`, default from `pp_guidance` | `"timing,pitch,energy,effort"`; default `"1.0,2.0,4.0,1.0"` |
+| emphasis strength | `emphasis_scale=` / `--emphasis-scale` | multiplies the emphasis shape (pitch peak, lengthening, loudness); 1.0 = the average real emphasis, default 1.5 |
 | emphasis source | `--emphasis auto\|marked\|none` | auto uses marks if present, otherwise the student |
 | pace | `--length-scale` | >1 is slower |
-| variety | `pp_temperature` | `"timing,pitch,energy"`; default `"0.8,0.7,1.0"`; higher is livelier but riskier |
+| variety | `temperature=` / `--temperature`, default from `pp_temperature` | `"timing,pitch,energy"`; default `"0.8,0.7,1.0"`; higher is livelier but riskier |
 | whispering | `unvoiced_styles` | styles rendered without voicing; set by the recipe from the data |
 | voicing | `voicing_fix` | voicing follows the phonemes (default on) |
 
