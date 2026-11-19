@@ -105,7 +105,8 @@ out 15 whole sentences in all eight emotions.
 | Piper voice, fine-tuned | −23.1 | −23.0 | −22.3 | −22.9 |
 | **x-vits 0.2** | **−21.9** | **−23.8** | **−23.7** | **−2.0** |
 
-Angry pitch went from 196 Hz to 214 Hz (recording 220 Hz) once the pitch tracker stopped clipping it.
+Angry pitch rose from 185 Hz in the first run to 214 Hz (recording 220 Hz): first by no longer clipping
+shouted pitch in the training targets, then by adding vocal effort.
 Word errors are higher than plain Piper's because Piper reads every emotion in a clear neutral voice,
 while x-vits whispers, slurs and shouts. The voice is published as
 [fdemelo/x-vits-thorsten-emotional](https://huggingface.co/fdemelo/x-vits-thorsten-emotional).
