@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "x-vits"
-version = "0.2.0"
+version = "0.3.0"
 description = "Expressive prosody for Piper/VITS voices: styles, emphasis and natural intonation in a 25M-parameter model."
 readme = "README.md"
 license = { text = "MIT" }

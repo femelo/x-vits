@@ -104,6 +104,7 @@ def main():
     p.add_argument("--style-lr", type=float, default=1e-3, help="style embedding")
     p.add_argument("--val-every", type=int, default=500)
     p.add_argument("--seed", type=int, default=1234)
+    p.add_argument("--style-speakers", help="comma-separated styles in speaker-id order (multi-speaker voice)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +123,7 @@ def main():
     val = load_rows(args.eval_set, utts, "utt")
     assert not {u for u, _ in val} & {u for u, _ in train}, "eval utterances in training set"
     rx = re.compile(args.style_regex)
+    speakers = args.style_speakers.split(",") if args.style_speakers else None
     names = {u: rx.search(u).group(1) for u, _ in train + val}
     styles = sorted(set(names.values()))
     sidx = {u: 1 + styles.index(n) for u, n in names.items()}
@@ -160,7 +162,11 @@ def main():
                 if labelled and random.random() >= p_drop / 2:
                     e[b, :, : len(pid)] = torch.from_numpy(emph[u]).reshape(n_e, -1)
             e = e.to(args.device)
-        nll = dp(x, x_mask, w * x_mask, h_add=emb(g, e) * x_mask)
+        spk = None
+        if speakers:  # multi-speaker voice: the true emotion's speaker embedding, never dropped
+            sid = torch.LongTensor([speakers.index(names[u]) for u, _ in rows]).to(args.device)
+            spk = model_g.emb_g(sid).unsqueeze(-1)
+        nll = dp(x, x_mask, w * x_mask, g=spk, h_add=emb(g, e) * x_mask)
         return nll.sum() / x_mask.sum()
 
     @torch.no_grad()

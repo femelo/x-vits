@@ -53,6 +53,12 @@ def main():
         "--resume_from_single_speaker_checkpoint",
         help="For multi-speaker models only. Converts a single-speaker checkpoint to multi-speaker and resumes training",
     )
+    parser.add_argument(
+        "--zero-init-speaker-cond",
+        action="store_true",
+        help="with --resume_from_single_speaker_checkpoint: start the new speaker-conditioning "
+        "layers at zero, so training starts from exactly the single-speaker voice",
+    )
     # Trainer options (PL >= 2 no longer provides Trainer.add_argparse_args)
     parser.add_argument("--max_epochs", type=int, default=-1)
     parser.add_argument("--max_steps", type=int, default=-1)
@@ -172,11 +178,10 @@ def main():
             "Resuming from single-speaker checkpoint: %s",
             args.resume_from_single_speaker_checkpoint,
         )
-        model_single = VitsModel.load_from_checkpoint(
-            args.resume_from_single_speaker_checkpoint,
-            dataset=None,
-        )
-        g_dict = model_single.model_g.state_dict()
+        ck_single = torch.load(args.resume_from_single_speaker_checkpoint, map_location="cpu", weights_only=False)
+        sd_single = ck_single["state_dict"]
+        g_dict = {k[len("model_g."):]: v for k, v in sd_single.items() if k.startswith("model_g.")}
+        d_dict = {k[len("model_d."):]: v for k, v in sd_single.items() if k.startswith("model_d.")}
         for key in list(g_dict.keys()):
             # Remove keys that can't be copied over due to missing speaker embedding
             if (
@@ -189,7 +194,18 @@ def main():
         # Copy over the multi-speaker model, excluding keys related to the
         # speaker embedding (which is missing from the single-speaker model).
         load_state_dict(model.model_g, g_dict)
-        load_state_dict(model.model_d, model_single.model_d.state_dict())
+        load_state_dict(model.model_d, d_dict)
+        if args.zero_init_speaker_cond:
+            n = 0
+            for name, mod in model.model_g.named_modules():
+                if name.endswith("cond") or name.endswith("cond_layer"):
+                    # weight-normed layers: zero the gain (zeroing the direction divides by 0)
+                    names = dict(mod.named_parameters(recurse=False))
+                    for pn in (["weight_g"] if "weight_g" in names else ["weight"]) + ["bias"]:
+                        if pn in names:
+                            torch.nn.init.zeros_(names[pn])
+                            n += names[pn].numel()
+            _LOGGER.info("Speaker conditioning starts at zero (%d parameters)", n)
         _LOGGER.info(
             "Successfully converted single-speaker checkpoint to multi-speaker"
         )

@@ -97,6 +97,11 @@ def main() -> None:
     p.add_argument("--pp-voicing-fix", action="store_true",
                    help="voicing by phoneme type: voiceless consonants unvoiced, vowels and "
                    "sonorants voiced (pitch interpolated); use with --pp-durations sdp")
+    p.add_argument("--style-speakers", default="",
+                   help="comma-separated styles in speaker-id order: the style also selects that speaker "
+                   "embedding (multi-speaker x-vits voice); no style -> 'neutral' if listed, else speaker 0")
+    p.add_argument("--style-gain", default="",
+                   help='output level per style in dB, e.g. "whisper=-8,sleepy=-4"')
     p.add_argument("--pp-unvoiced-styles", default="",
                    help="comma-separated styles rendered fully unvoiced (vfrac 0, no pitch), e.g. whisper")
     p.add_argument("--dp-style-ckpt", type=Path,
@@ -215,6 +220,11 @@ def main() -> None:
         ids = torch.LongTensor(row["phoneme_ids"]).unsqueeze(0).to(args.device)
         lengths = torch.LongTensor([ids.size(1)]).to(args.device)
         kw = {}
+        if args.style_speakers:
+            spk_list = args.style_speakers.split(",")
+            sname0 = (row.get("category") if args.pp_style in ("auto", "label") else args.pp_style) if args.pp_style else None
+            sid = spk_list.index(sname0) if sname0 in spk_list else (spk_list.index("neutral") if "neutral" in spk_list else 0)
+            kw["sid"] = torch.LongTensor([sid]).to(args.device)
         if pros is not None:
             utt = pros["utts"][row["utt"]]
             assert len(utt["dur"]) == ids.size(1), row["id"]
@@ -308,7 +318,8 @@ def main() -> None:
                 if t_log is not None and kw["prosody"].size(1) > 3 and "tilt_std" in st_:  # more effort
                     kw["prosody"][:, 3] += torch.from_numpy(t_log).to(lf0) / st_["tilt_std"]
                 with torch.no_grad():
-                    logw = model.model_g.dp(x, x_mask, reverse=True, noise_scale=args.noise_scale_w,
+                    g_spk = model.model_g.emb_g(kw["sid"]).unsqueeze(-1) if "sid" in kw else None
+                    logw = model.model_g.dp(x, x_mask, g=g_spk, reverse=True, noise_scale=args.noise_scale_w,
                                             h_add=kw.pop("dp_cond", None))
                 # infer() does round(durations * length_scale); the normal SDP path
                 # does ceil(w * length_scale).  Pre-apply ceil so both agree
@@ -330,6 +341,11 @@ def main() -> None:
                 kw["prosody"][:, 1] = 0.0  # vfrac
         with torch.no_grad():
             audio = model(ids, lengths, scales, **kw).squeeze().float().cpu().numpy()
+        if args.style_gain:
+            gains = {k: float(v) for k, v in (kv.split("=") for kv in args.style_gain.split(","))}
+            sname_g = row.get("category") if args.pp_style in ("auto", "label") else args.pp_style
+            if sname_g in gains:
+                audio = audio * (10 ** (gains[sname_g] / 20))
         wall = time.perf_counter() - t0
         wav = args.out_dir / f"{row['id']}.wav"
         sf.write(wav, audio, sample_rate)

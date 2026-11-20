@@ -78,7 +78,8 @@ class Acoustic(nn.Module):
         super().__init__()
         self.g = g
 
-    def forward(self, x, x_mask, prosody, w_ceil, noise):
+    def forward(self, x, x_mask, prosody, w_ceil, noise, spk=None):
+        """spk: the speaker (emotion) embedding [1, gin, 1] of a multi-speaker voice, else None."""
         from piper_train.vits import commons
 
         g = self.g
@@ -94,8 +95,8 @@ class Acoustic(nn.Module):
             pf = interp_prosody_frames_onnx(prosody, w_ceil, n_frames)
             m_p = m_p + g.prosody_frame(pf * y_mask) * y_mask
         z_p = m_p + noise * torch.exp(logs_p)
-        z = g.flow(z_p, y_mask, g=None, reverse=True)
-        return g.dec(z * y_mask)
+        z = g.flow(z_p, y_mask, g=spk, reverse=True)
+        return g.dec(z * y_mask, g=spk)
 
 
 class Durations(nn.Module):
@@ -223,8 +224,11 @@ def export(bundle_path: Path, out: Path, verify: bool = False, text: str = None)
     n_pros = g.prosody_channels  # 3, or 4 with the vocal-effort channel
     pros = torch.zeros(1, n_pros, ids.size(1)); pros[:, 1] = 1.0
     noise = torch.randn(1, g.inter_channels, n_frames) * 0.667
-    _export(Acoustic(g), (x, x_mask, pros, w_ceil, noise), out / "acoustic.onnx",
-            ["x", "x_mask", "prosody", "w_ceil", "noise"], ["audio"],
+    multi = bool(b.speakers) and getattr(g, "emb_g", None) is not None
+    ac_in, ac_names = (x, x_mask, pros, w_ceil, noise), ["x", "x_mask", "prosody", "w_ceil", "noise"]
+    if multi:  # the emotion's speaker embedding enters the flow and the vocoder
+        ac_in, ac_names = ac_in + (g.emb_g.weight[:1].detach().unsqueeze(-1),), ac_names + ["spk"]
+    _export(Acoustic(g), ac_in, out / "acoustic.onnx", ac_names, ["audio"],
             {"x": {2: T}, "x_mask": {2: T}, "prosody": {2: T}, "w_ceil": {2: T}, "noise": {2: "frames"}, "audio": {2: "samples"}})
 
     # predictor step
@@ -262,6 +266,15 @@ def export(bundle_path: Path, out: Path, verify: bool = False, text: str = None)
             arrs["emph_w"] = cond_m.emph.weight.detach().numpy(); arrs["emph_b"] = cond_m.emph.bias.detach().numpy()
         np.savez(out / "dp_cond.npz", **arrs)
         files["dp_cond"] = "dp_cond.npz"
+    if multi:
+        # speaker embeddings for the acoustic graph, and their (constant) contribution to the
+        # duration predictor, which the runtime adds to h_add
+        gdp = (g2 if b.durations else g).dp
+        with torch.no_grad():
+            emb = g.emb_g.weight.detach()
+            dp_g = gdp.cond(emb.unsqueeze(-1))[:, :, 0]
+        np.savez(out / "speakers.npz", g=emb.numpy(), dp_g=dp_g.numpy())
+        files["speakers"] = "speakers.npz"
 
     shutil.copy(b.config, out / "config.json")
     if b.template:
@@ -275,6 +288,7 @@ def export(bundle_path: Path, out: Path, verify: bool = False, text: str = None)
                       "n_targets": pred.n_targets},
         "durations_styles": styles_dp if b.durations else [],
         "frame_prosody": g.prosody_frame is not None, "defaults": b.defaults,
+        "speakers": b.speakers if multi else None,
     }
     (out / "runtime.json").write_text(json.dumps(manifest, indent=1))
     _LOG.info("runtime manifest: %s", out / "runtime.json")
@@ -329,10 +343,14 @@ def verify_export(out: Path, b, text: str, tol: float = 1e-3):
     _LOG.info("verify durations: max |diff| %.2e", np.abs(olw - lw2.numpy()).max())
     w_ceil = torch.ceil(torch.exp(lw2) * x_mask)
     noise = torch.randn(1, g.inter_channels, int(w_ceil.sum())) * 0.667
+    spk = g.emb_g.weight[-1:].detach().unsqueeze(-1) if (b.speakers and getattr(g, "emb_g", None) is not None) else None
     with torch.no_grad():
-        audio = Acoustic(g)(x, x_mask, pros.clamp(-3, 3), w_ceil, noise)
-    oa = sess("acoustic.onnx").run(None, {"x": x.numpy(), "x_mask": x_mask.numpy(), "prosody": pros.clamp(-3, 3).numpy(),
-                                          "w_ceil": w_ceil.numpy(), "noise": noise.numpy()})[0]
+        audio = Acoustic(g)(x, x_mask, pros.clamp(-3, 3), w_ceil, noise, spk)
+    feeds = {"x": x.numpy(), "x_mask": x_mask.numpy(), "prosody": pros.clamp(-3, 3).numpy(),
+             "w_ceil": w_ceil.numpy(), "noise": noise.numpy()}
+    if spk is not None:
+        feeds["spk"] = spk.numpy()
+    oa = sess("acoustic.onnx").run(None, feeds)[0]
     _LOG.info("verify acoustic: max |diff| %.2e (audio peak %.2f)", np.abs(oa - audio.numpy()).max(), float(audio.abs().max()))
 
     # full chain: ONNX runtime vs the PyTorch path, same noise, several lengths
@@ -403,8 +421,9 @@ def torch_reference(b, g, trace):
         logw = Durations(g)(x, x_mask, t(trace["z"]), t(trace["h_add"]))
         wd = torch.exp(logw) * x_mask * t(trace["d_mul"]).view(1, 1, -1)
         w_ceil = torch.ceil(wd * trace["length_scale"]) * x_mask
-        audio = Acoustic(g)(x, x_mask, pros, w_ceil, t(trace["noise"]))
-    return audio.squeeze().numpy()
+        spk = t(trace["spk"]) if trace.get("spk") is not None else None
+        audio = Acoustic(g)(x, x_mask, pros, w_ceil, t(trace["noise"]), spk)
+    return audio.squeeze().numpy() * np.float32(10 ** (trace.get("gain_db", 0.0) / 20))
 
 
 def main(argv=None):

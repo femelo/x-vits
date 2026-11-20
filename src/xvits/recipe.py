@@ -197,10 +197,34 @@ def stage_voice(run: Run, pros, ft):
     a, d = run.a, run.d("voice")
     extra = ["--prosody-frame"] if a.frame_prosody else []
     cfg = json.loads((Path(pros["train_dataset"]) / "config.json").read_text(encoding="utf-8"))
-    run.sh("voice", "piper_train", "--dataset-dir", pros["train_dataset"], "--pretrained-checkpoint", ft["ckpt"],
+    dataset, init, speakers = pros["train_dataset"], ["--pretrained-checkpoint", ft["ckpt"]], None
+    if a.emotion_speakers:
+        # each style also gets its own speaker embedding (timbre: whisper, shouting), learned from a
+        # zero start on top of the single-speaker voice
+        dataset, speakers = emotion_speaker_dataset(Path(pros["train_dataset"]), d / "dataset_speakers", a.style_regex)
+        init = ["--resume_from_single_speaker_checkpoint", ft["ckpt"], "--zero-init-speaker-cond"]
+    run.sh("voice", "piper_train", "--dataset-dir", dataset, *init,
            "--prosody-channels", cfg["prosody"]["channels"], *extra, "--max_epochs", a.voice_epochs, "--checkpoint-epochs", a.voice_epochs,
            "--default_root_dir", d, *run.train_args())
-    return run.finish("voice", {"ckpt": str(last_ckpt(d)), "frame_prosody": bool(a.frame_prosody)})
+    return run.finish("voice", {"ckpt": str(last_ckpt(d)), "frame_prosody": bool(a.frame_prosody), "speakers": speakers})
+
+
+def emotion_speaker_dataset(src: Path, dst: Path, style_regex: str):
+    """Copy of a prosody dataset dir where each style is a speaker (sorted style names)."""
+    rx = re.compile(style_regex)
+    rows = [json.loads(l) for l in open(src / "dataset.jsonl", encoding="utf-8") if l.strip()]
+    style = lambda r: rx.search(Path(r["audio_path"]).stem).group(1)
+    speakers = sorted({style(r) for r in rows})
+    dst.mkdir(parents=True, exist_ok=True)
+    with open(dst / "dataset.jsonl", "w", encoding="utf-8") as f:
+        for r in rows:
+            r["speaker_id"] = speakers.index(style(r))
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    cfg = json.loads((src / "config.json").read_text(encoding="utf-8"))
+    cfg["num_speakers"] = len(speakers)
+    cfg["speaker_id_map"] = {s: i for i, s in enumerate(speakers)}
+    (dst / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(dst), speakers
 
 
 def build_emphasis_db(run: Run, data) -> Optional[Path]:
@@ -255,6 +279,8 @@ def stage_durations(run: Run, data, pros, voice, pred):
     if not a.style_regex:
         return run.finish("durations", {"ckpt": None, "reason": "no styles: the voice's own duration predictor is used"})
     extra = ["--emphasis", pred["emphasis_db"]] if pred.get("emphasis_db") else []
+    if voice.get("speakers"):
+        extra += ["--style-speakers", ",".join(voice["speakers"])]
     run.sh("durations", "piper_train.prosody.train_dp_style", "--checkpoint", voice["ckpt"], "--prosody", pros["all"],
            "--dataset", Path(pros["train_dataset"]) / "dataset.jsonl", "--eval-set", data["dev_set"],
            "--style-regex", a.style_regex, "--steps", a.durations_steps, "--out-dir", d, *extra)
@@ -284,6 +310,11 @@ def stage_template(run: Run, data, pros):
            "--dataset", Path(pros["train_dataset"]) / "dataset.jsonl", "--config", data["config"],
            "--out", d / "emphasis_template.json", *extra)
     return run.finish("template", {"json": str(d / "emphasis_template.json")})
+
+
+def parse_style_gain(s: str) -> Dict[str, float]:
+    """'whisper=-8,sleepy=-4' -> {'whisper': -8.0, 'sleepy': -4.0}"""
+    return {k.strip(): float(v) for k, v in (kv.split("=") for kv in s.split(",") if kv.strip())}
 
 
 def unvoiced_styles(prosody_pt: str, style_regex: str, ratio: float = 0.2) -> List[str]:
@@ -323,10 +354,12 @@ def stage_bundle(run: Run, data, ft, pros, voice, pred, durs, prom, tpl):
 
         styles = list(torch.load(pred["ckpt"], map_location="cpu", weights_only=False).get("styles") or [])
         defaults["unvoiced_styles"] = unvoiced_styles(str(Path(pros["all"]).parent / "train.pt"), a.style_regex)
+        if a.style_gain:
+            defaults["style_gain_db"] = parse_style_gain(a.style_gain)
     b = Bundle(
         name=a.name or a.out.name, config=data["config"], voice=voice["ckpt"], baseline=ft["ckpt"],
         predictor=pred["ckpt"], durations=durs.get("ckpt"), prominence=prom["ckpt"], template=tpl["json"],
-        styles=styles, frame_prosody=voice.get("frame_prosody", False), defaults=defaults,
+        styles=styles, speakers=voice.get("speakers"), frame_prosody=voice.get("frame_prosody", False), defaults=defaults,
     )
     path = b.save(d / "xvits.json")
     return run.finish("bundle", {"bundle": str(path)})
@@ -388,6 +421,9 @@ def main(argv: Optional[List[str]] = None):
     p.add_argument("--skip-finetune", action="store_true", help="--base-ckpt is already fine-tuned on this voice")
     p.add_argument("--ft-epochs", type=int, default=400)
     p.add_argument("--voice-epochs", type=int, default=200)
+    p.add_argument("--style-gain", help='output level per style in dB, e.g. "whisper=-8,sleepy=-4,drunk=-4"')
+    p.add_argument("--emotion-speakers", action="store_true",
+                   help="also give each style its own speaker embedding in the voice (timbre: whisper, shouting)")
     p.add_argument("--no-frame-prosody", dest="frame_prosody", action="store_false",
                    help="stage 2 only (per-token prosody, no frame-level interpolation)")
     p.add_argument("--predictor-steps", type=int, default=10000)

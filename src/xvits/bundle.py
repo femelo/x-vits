@@ -17,6 +17,7 @@ class Bundle:
     prominence: Optional[str] = None # stage 4b student
     template: Optional[str] = None   # stage 4a stress-anchored emphasis template
     styles: List[str] = field(default_factory=list)
+    speakers: Optional[List[str]] = None  # styles that are also speaker embeddings in the voice, in id order
     frame_prosody: bool = False
     defaults: Dict = field(default_factory=dict)
 
@@ -38,6 +39,9 @@ class Bundle:
             "pp_steps": 16,
             "unvoiced_styles": [],             # e.g. whisper: voicing forced off (set by the recipe from the data)
             "voicing_fix": True,               # voicing by phoneme identity: no blips from a voiced k or unvoiced vowel
+            # output level per style in dB: datasets are loudness-normalised per file, so a whisper
+            # comes out as loud as a shout unless told otherwise (e.g. {"whisper": -8, "sleepy": -4})
+            "style_gain_db": {},
         }
         d.update(self.defaults or {})
         self.defaults = d
@@ -74,6 +78,10 @@ class Bundle:
              "--noise-scale-w", str(d["noise_scale_w"]), "--length-scale", str(d["length_scale"])]
         if d["voicing_fix"]:
             a += ["--pp-voicing-fix"]
+        if self.speakers:
+            a += ["--style-speakers", ",".join(self.speakers)]
+        if d["style_gain_db"]:
+            a += ["--style-gain", ",".join(f"{k}={v}" for k, v in d["style_gain_db"].items())]
         if style:
             a += ["--pp-style", style]
             if d["unvoiced_styles"]:

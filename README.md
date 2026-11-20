@@ -49,6 +49,7 @@ sf.write("hello.wav", audio, voice.sample_rate)
 - 🌊 **Flow-matching prosody.** A conditional flow-matching model *samples* pitch, voicing, energy and vocal effort per phoneme, so every sentence isn't averaged into the same contour.
 - 📣 **Vocal effort.** Shouting is not just louder: the voice gets brighter and more pressed. x-vits measures that per phoneme (energy at 2–5 kHz relative to 0–1 kHz) and learns it per style, so an angry sentence sounds strained from the first word to the last, even on loudness-normalised data.
 - 🤫 **Whispering.** Styles that are (nearly) unvoiced in the recordings are detected from the data and rendered without voicing.
+- 🎙️ **Emotion timbre.** With `--emotion-speakers`, each style also gets its own learned embedding in the voice, so a whisper is breathy and a sleepy voice is soft, not just differently intoned. Per-style levels keep a whisper quieter than a shout.
 - 🎚️ **Style-aware timing.** The voice's own duration predictor learns styles too: sad slows down, enunciated takes its pauses.
 - 🔁 **One recipe for any voice and language.** `xvits-train` turns an LJSpeech-style folder and a Piper checkpoint into an expressive voice. No labels are needed: emphasis and prominence are learned from the recordings themselves. The pitch range adapts to the speaker, including shouting, and evaluation picks the Whisper model for the voice's language.
 - 📦 **ONNX export with a tiny runtime.** Five graphs plus a numpy driver. The export is verified against PyTorch end to end (max difference ≈ 1e-5).
@@ -87,35 +88,41 @@ listening, 0.2 improved the extremes (happy, sad) and kept the other styles as g
 
 ### 🇩🇪 German: Thorsten, eight emotions
 
-The recipe validated end to end on a second language with no changes to the defaults:
-[Thorsten-Voice Piper-Scratch](https://huggingface.co/Thorsten-Voice/Piper-Scratch) (trained from scratch on
-neutral speech) plus Thorsten's own [emotional dataset](https://www.openslr.org/110/) (CC0, 300 sentences in
-each of neutral, amused, angry, disgusted, sleepy, surprised, drunk and whispering, 2.9 h). The dev set holds
-out 15 whole sentences in all eight emotions.
+A second language and a harder dataset: Thorsten Müller's [emotional recordings](https://www.openslr.org/110/)
+(CC0, the same 300 sentences in each of neutral, amused, angry, disgusted, surprised, sleepy, drunk and whispering,
+2.9 h) on top of Piper's [`thorsten/high`](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/main/de/de_DE/thorsten/high)
+voice, with `--emotion-speakers`, cleaned recordings and per-style levels (see the
+[config](configs/thorsten_emotional.sh)). The dev set holds out 15 whole sentences in all eight emotions.
 
-| | pitch follows recording¹ | timing follows recording | word errors² |
+| held-out sentences | pitch follows recording¹ | timing follows recording | word errors² |
 |---|---|---|---|
-| Piper voice, fine-tuned | 0.21 | 0.23 | 9.1 % |
-| **x-vits 0.2** | **0.37** | **0.30** | 12.6 % |
-| the recordings | | | 3.2 % |
+| Piper voice, fine-tuned on the same data | 0.29 | 0.24 | 8.1 % |
+| **x-vits** | **0.42** | **0.37** | 7.9 % |
 
-| Vocal effort (2–5 kHz vs 0–1 kHz, dB) | angry | neutral | sleepy | whisper |
-|---|---|---|---|---|
-| recording | −19.9 | −23.9 | −23.7 | −0.5 |
-| Piper voice, fine-tuned | −23.1 | −23.0 | −22.3 | −22.9 |
-| **x-vits 0.2** | **−21.9** | **−23.8** | **−23.7** | **−2.0** |
+Piper's official [`thorsten_emotional`](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/main/de/de_DE/thorsten_emotional/medium)
+voice already selects emotions, by training each one as a separate speaker. On 16 new sentences that neither voice
+has seen (two per emotion):
 
-Angry pitch rose from 185 Hz in the first run to 214 Hz (recording 220 Hz): first by no longer clipping
-shouted pitch in the training targets, then by adding vocal effort.
-Word errors are higher than plain Piper's because Piper reads every emotion in a clear neutral voice,
-while x-vits whispers, slurs and shouts. The voice is published as
-[fdemelo/x-vits-thorsten-emotional](https://huggingface.co/fdemelo/x-vits-thorsten-emotional).
+| new sentences | word errors² | whispered speech that is voiced |
+|---|---|---|
+| Piper `thorsten_emotional` (medium) | 4.8 % | 1 % |
+| **x-vits** | **1.2 %** | **0 %** |
 
-The fine-tuned Piper voice reads all eight emotions in the same voice; it cannot whisper or shout.
-UTMOS is not reported here: it is trained on English and rates Thorsten's own recordings 2.5 on average
-(whispering 1.25), so it cannot rank naturalness for this voice.
+(That comparison isn't like for like: Piper's voice starts from the medium checkpoint and was trained on all 300
+sentences. x-vits adds emphasis, per-phoneme prosody and the strength dials on top of the same emotion-embedding idea.)
+UTMOS is not reported: it's trained on English and rates Thorsten's own recordings 2.5 on average (whispering 1.25).
+The voice is published as [fdemelo/x-vits-thorsten-emotional](https://huggingface.co/fdemelo/x-vits-thorsten-emotional).
 
 <sub>¹ Correlation of the synthesised pitch contour with the real recording of the same sentence, on 129 held-out sentences, averaged over two seeds (the voice cannot know the exact take, so this is a lower bound on naturalness). ² Whisper WER (small.en for English, large-v3-turbo otherwise). ³ Automatic MOS; it rates audio quality, not prosody. Design choices were also guided by informal (mostly blind) listening tests with a single listener. Treat those as anecdotal, and run your own.</sub>
+
+### What's new in 0.3
+
+- **Emotion embeddings in the voice** (`--emotion-speakers`): each style also gets a learned embedding in the flow, vocoder and duration predictor, so whisper, sleepy or shouted speech gets its own timbre, not only its own prosody. The embeddings start at zero on top of the single-speaker voice.
+- **Per-style output level** (`--style-gain`): recordings are usually loudness-normalised, so a whisper would come out as loud as a shout. For Thorsten: whisper −16 dB, sleepy and drunk −4 dB.
+- **Spectral gate** for training data (`python -m piper_train.norm_audio.spectral_gate`): removes room noise between words, per style if needed, without touching the speech. An emotion embedding otherwise learns each recording session's hiss.
+- **High-quality bases** (`--quality high`) work out of the box.
+
+Voices exported with 0.3 and emotion embeddings need the 0.3 runtime.
 
 ### What's new in 0.2
 
@@ -215,7 +222,8 @@ Want a quick end-to-end check before a real run? Add `--quick` (tiny epochs and 
 
 **Data tips.**
 - Normalise loudness per file and leave ~150 ms of silence at both ends; files cut hard at the speech boundaries teach abrupt onsets.
-- Denoising is rarely worth it on clean recordings: it changes the timbre relative to the base voice.
+- Neural denoising is rarely worth it on clean recordings: it changes the timbre relative to the base voice. Background noise between words is another matter: with emotion embeddings the voice learns each session's hiss. The spectral gate removes it without touching the speech: `python -m piper_train.norm_audio.spectral_gate --input-dir wavs --output-dir wavs_clean --max-db 15 --style-max-db "whisper=25,sleepy=25,drunk=25"`.
+- Per-file loudness normalisation flattens natural level differences. Restore them at synthesis with `--style-gain` (e.g. `"whisper=-16,sleepy=-4,drunk=-4"`).
 - If the same sentences are recorded in several styles, hold out *whole sentences* with `--dev-list`, or the dev set leaks into training.
 
 Example configs: [`configs/expresso_ex02.sh`](configs/expresso_ex02.sh) (English) and [`configs/thorsten_emotional.sh`](configs/thorsten_emotional.sh) (German).
@@ -233,6 +241,7 @@ Example configs: [`configs/expresso_ex02.sh`](configs/expresso_ex02.sh) (English
 | variety | `temperature=` / `--temperature`, default from `pp_temperature` | `"timing,pitch,energy"`; default `"0.8,0.7,1.0"`; higher is livelier but riskier |
 | whispering | `unvoiced_styles` | styles rendered without voicing; set by the recipe from the data |
 | voicing | `voicing_fix` | voicing follows the phonemes (default on) |
+| level per style | `style_gain_db` (recipe: `--style-gain`) | output level in dB per style, e.g. a quieter whisper |
 
 The PyTorch path (`python -m piper_train.eval.synthesize`) exposes everything, including the learned
 emphasis models, stage-by-stage ablations and real-prosody resynthesis. See `xvits.Bundle.synth_args`.

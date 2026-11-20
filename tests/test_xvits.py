@@ -29,6 +29,33 @@ class BundleTest(unittest.TestCase):
                        defaults={"unvoiced_styles": ["whisper"]}).synth_args(style="label")
             self.assertEqual(w[w.index("--pp-unvoiced-styles") + 1], "whisper")
 
+    def test_style_gain_and_speakers(self):
+        from xvits.bundle import Bundle
+        from xvits.recipe import parse_style_gain
+
+        self.assertEqual(parse_style_gain("whisper=-16, sleepy=-4"), {"whisper": -16.0, "sleepy": -4.0})
+        b = Bundle(name="v", config="c", voice="v", predictor="p", styles=["angry", "whisper"],
+                   speakers=["angry", "whisper"], defaults={"style_gain_db": {"whisper": -16.0}})
+        a = b.synth_args(style="label")
+        self.assertEqual(a[a.index("--style-speakers") + 1], "angry,whisper")
+        self.assertEqual(a[a.index("--style-gain") + 1], "whisper=-16.0")
+
+    def test_spectral_gate(self):
+        from piper_train.norm_audio.spectral_gate import spectral_gate
+
+        sr, rng = 22050, np.random.default_rng(0)
+        t = np.arange(sr) / sr
+        tone = np.where((t > 0.3) & (t < 0.7), 0.3 * np.sin(2 * np.pi * 220 * t), 0.0)
+        noise = 0.003 * rng.standard_normal(sr)
+        pad = np.zeros(2000)
+        x = np.concatenate([pad, tone + noise, pad]).astype(np.float32)
+        y = spectral_gate(x, sr, max_db=20)
+        q = slice(2000 + 1000, 2000 + 5000)  # a pause: noise only
+        s = slice(2000 + 9000, 2000 + 14000)  # speech-like tone
+        self.assertLess(np.std(y[q]), 0.5 * np.std(x[q]))                     # background reduced
+        self.assertGreater(np.std(y[s]) / np.std(x[s]), 0.95)                   # tone kept
+        self.assertLess(np.abs(y[:900]).max(), 1e-3)  # padding away from the STFT window's reach stays silent
+
     def test_per_channel(self):
         from xvits.runtime import per_channel
 

@@ -45,6 +45,9 @@ class XVits:
         self.prom = mk("prominence") if "prominence" in f else None
         self.template = json.loads((self.dir / f["template"]).read_text()) if "template" in f else None
         self.dp_cond = dict(np.load(self.dir / f["dp_cond"])) if "dp_cond" in f else None
+        # multi-speaker voice: each style is also a speaker embedding (timbre)
+        self.speakers = self.m.get("speakers")
+        self.spk = dict(np.load(self.dir / f["speakers"])) if "speakers" in f else None
         self.pz = PiperPhonemizer(self.dir / self.m["config"])
         self.inv = {v: k for k, v in self.pz.id_map.items()}
         self.pstats = self.m["predictor"]["stats"]
@@ -215,6 +218,12 @@ class XVits:
             if style and style in self.m["durations_styles"]:
                 s = 1 + self.m["durations_styles"].index(style)
             h_add += self.dp_cond["style"][s][None, :, None]
+        spk = None
+        if self.spk is not None:
+            sp = self.speakers
+            si = sp.index(style) if style in sp else (sp.index("neutral") if "neutral" in sp else 0)
+            h_add += self.spk["dp_g"][si][None, :, None]
+            spk = self.spk["g"][si][None, :, None].astype(np.float32)
         z = (rng.standard_normal((1, 2, len(ids))) * d["noise_scale_w"]).astype(np.float32)
         logw = self.dur.run(None, {"x": x, "x_mask": mask, "z": z, "h_add": h_add})[0]
         ls = d["length_scale"] if length_scale is None else length_scale
@@ -222,14 +231,19 @@ class XVits:
         w_ceil = (np.ceil(w * ls) * mask).astype(np.float32)
         n_frames = int(w_ceil.sum())
         noise = (rng.standard_normal((1, self.m["inter_channels"], n_frames)) * d["noise_scale"]).astype(np.float32)
-        audio = self.ac.run(None, {"x": x, "x_mask": mask, "prosody": pros.astype(np.float32),
-                                   "w_ceil": w_ceil, "noise": noise})[0].squeeze()
+        feeds = {"x": x, "x_mask": mask, "prosody": pros.astype(np.float32), "w_ceil": w_ceil, "noise": noise}
+        if spk is not None:
+            feeds["spk"] = spk
+        audio = self.ac.run(None, feeds)[0].squeeze()
+        gain_db = d.get("style_gain_db", {}).get(style, 0.0)
+        if gain_db:  # quieter whisper / sleepy / drunk: the training data was level-matched
+            audio = audio * np.float32(10 ** (gain_db / 20))
         if return_trace:
             return audio, {"ids": ids, "noise0": noise0, "temperature": temp.ravel().tolist(), "guidance": guidance,
                            "steps": n_steps, "style_index": sidx, "prosody": pros, "p_st": p_st,
                            "e_log": e_log, "t_log": t_log, "voicing_fix": voicing_fix, "w_ceil": w_ceil,
                            "symbols": [self.inv.get(int(i), "?") for i in ids], "unvoiced": style in d.get("unvoiced_styles", []),
-                           "d_mul": d_mul, "z": z, "h_add": h_add, "noise": noise, "length_scale": ls}
+                           "d_mul": d_mul, "z": z, "h_add": h_add, "noise": noise, "length_scale": ls, "spk": spk, "gain_db": gain_db}
         return audio
 
 
