@@ -317,6 +317,38 @@ def parse_style_gain(s: str) -> Dict[str, float]:
     return {k.strip(): float(v) for k, v in (kv.split("=") for kv in s.split(",") if kv.strip())}
 
 
+def voice_limits(prosody_pt: str, dataset_jsonl: Path, config: str, style_regex: Optional[str]) -> dict:
+    """Safeguards measured on the voice's own training alignments:
+    - stress_max_frames: p95 duration of stress-mark tokens (a long one is heard as an extra vowel);
+    - pitch_ceiling: per style, p95 of standardised log-F0, soft-limited above (style exaggeration
+      otherwise holds a vowel above anything the speaker produced; p95 sounded better than p99)."""
+    import numpy as np
+    import torch
+
+    P = torch.load(prosody_pt, map_location="cpu", weights_only=False)
+    utts, st = P["utts"], P["stats"]
+    id_map = json.loads(Path(config).read_text(encoding="utf-8"))["phoneme_id_map"]
+    stress_ids = {v[0] for k, v in id_map.items() if k in ("ˈ", "ˌ")}
+    stress = []
+    for line in open(dataset_jsonl, encoding="utf-8"):
+        r = json.loads(line)
+        u = utts.get(Path(r["audio_path"]).stem)
+        if u is not None and len(u["dur"]) == len(r["phoneme_ids"]):
+            stress += [int(d) for t, d in zip(r["phoneme_ids"], u["dur"]) if t in stress_ids]
+    out = {"stress_max_frames": float(np.percentile(stress, 95)) if stress else None}
+    if style_regex:
+        rx, by = re.compile(style_regex), {}
+        for k, u in utts.items():
+            m = rx.search(k)
+            l = np.asarray(u["lf0"], float)
+            l = l[~np.isnan(l)]
+            if m and len(l):
+                by.setdefault(m.group(1), []).append((l - st["lf0_mean"]) / st["lf0_std"])
+        out["pitch_ceiling"] = {s: round(float(np.percentile(np.concatenate(v), 95)), 3) for s, v in sorted(by.items())}
+    _LOG.info("voice limits: %s", out)
+    return out
+
+
 def unvoiced_styles(prosody_pt: str, style_regex: str, ratio: float = 0.2) -> List[str]:
     """Styles whose recordings are (nearly) unvoiced, e.g. whispering: duration-weighted
     voiced fraction below ``ratio`` x the median over styles. Rendering them with
@@ -356,6 +388,8 @@ def stage_bundle(run: Run, data, ft, pros, voice, pred, durs, prom, tpl):
         defaults["unvoiced_styles"] = unvoiced_styles(str(Path(pros["all"]).parent / "train.pt"), a.style_regex)
         if a.style_gain:
             defaults["style_gain_db"] = parse_style_gain(a.style_gain)
+    defaults.update(voice_limits(str(Path(pros["all"]).parent / "train.pt"),
+                                 Path(pros["train_dataset"]) / "dataset.jsonl", data["config"], a.style_regex))
     b = Bundle(
         name=a.name or a.out.name, config=data["config"], voice=voice["ckpt"], baseline=ft["ckpt"],
         predictor=pred["ckpt"], durations=durs.get("ckpt"), prominence=prom["ckpt"], template=tpl["json"],

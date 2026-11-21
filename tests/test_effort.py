@@ -54,6 +54,18 @@ class EffortTest(unittest.TestCase):
         m = feature_matrix(u, dict(STATS4, tilt_voiced=True))
         np.testing.assert_allclose(m[2, 3], (np.mean(u["tilt"][[1, 3]]) + 4.0) / 1.5, rtol=1e-5)
 
+    def test_pitch_ceiling_and_stress_cap(self):
+        from piper_train.prosody.features import cap_stress_frames, soft_pitch_ceiling
+
+        l = np.array([0.5, 2.0, 3.5, 3.5], np.float32)
+        v = np.array([1.0, 1.0, 1.0, 0.0])
+        c = soft_pitch_ceiling(l, v, ceiling=2.5)
+        self.assertEqual(float(c[0]), 0.5)                   # below the ceiling: unchanged
+        self.assertLess(float(c[2]), 2.5 + 0.25 + 1e-6)       # above: soft-limited
+        self.assertEqual(float(c[3]), 3.5)                   # unvoiced: untouched
+        f = cap_stress_frames(np.array([4, 18, 2, 3], np.float32), ["p", "ˌ", "i", "_"], cap=9)
+        self.assertEqual(f.tolist(), [4, 9, 11, 3])         # excess moved to the vowel, total kept
+
     def test_predictor_width(self):
         kw = dict(text_channels=16, hidden=32, n_wn_layers=2, n_attn_layers=1, n_heads=2)
         self.assertEqual(ProsodyPredictor(STATS3, **kw).n_targets, 4)

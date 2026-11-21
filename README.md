@@ -64,7 +64,8 @@ six read styles), held-out sentences:
 |---|---|---|---|---|
 | Piper voice, fine-tuned | 0.37 | 0.30 | 1.7 % | 4.08 |
 | x-vits 0.1 | 0.37 | 0.39 | 2.1 % | 4.01 |
-| **x-vits 0.2** (vocal effort, wider pitch range) | **0.40** | 0.37 | 3.6 % | 3.86 |
+| x-vits 0.2 (vocal effort, wider pitch range) | **0.40** | 0.37 | 3.6 % | 3.86 |
+| **x-vits 0.3** (style embeddings, pitch and stress limits) | 0.38 | 0.39 | 4.5 % | **3.96** |
 | x-vits 0.2 voice, given the *real* prosody | 0.92 | 0.74 | 3.9 % | 3.89 |
 | the recordings themselves | | | | 4.12 |
 
@@ -121,6 +122,8 @@ The voice is published as [fdemelo/x-vits-thorsten-emotional](https://huggingfac
 - **Per-style output level** (`--style-gain`): recordings are usually loudness-normalised, so a whisper would come out as loud as a shout. For Thorsten: whisper −16 dB, sleepy and drunk −4 dB.
 - **Spectral gate** for training data (`python -m piper_train.norm_audio.spectral_gate`): removes room noise between words, per style if needed, without touching the speech. An emotion embedding otherwise learns each recording session's hiss.
 - **High-quality bases** (`--quality high`) work out of the box.
+- **Pitch stays in the speaker's range:** style exaggeration is soft-limited at each style's 95th-percentile pitch, measured on the training data (`pitch_ceiling`). Without it, laughing could hold a vowel above anything the speaker produced.
+- **No phantom vowels:** stress marks carry frames in Piper's token grid but no sound; a long one was heard as an extra vowel ("PM" → "P-E-M"). They're capped at their usual length from the training alignments (`stress_max_frames`), and the excess goes to the next vowel.
 
 Voices exported with 0.3 and emotion embeddings need the 0.3 runtime.
 
@@ -242,6 +245,8 @@ Example configs: [`configs/expresso_ex02.sh`](configs/expresso_ex02.sh) (English
 | whispering | `unvoiced_styles` | styles rendered without voicing; set by the recipe from the data |
 | voicing | `voicing_fix` | voicing follows the phonemes (default on) |
 | level per style | `style_gain_db` (recipe: `--style-gain`) | output level in dB per style, e.g. a quieter whisper |
+| pitch limit | `pitch_ceiling` | per style, soft limit at the training p95 (set by the recipe) |
+| stress-mark cap | `stress_max_frames` | longest stress-mark duration in frames (training p95, set by the recipe) |
 
 The PyTorch path (`python -m piper_train.eval.synthesize`) exposes everything, including the learned
 emphasis models, stage-by-stage ablations and real-prosody resynthesis. See `xvits.Bundle.synth_args`.

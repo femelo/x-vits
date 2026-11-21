@@ -416,11 +416,20 @@ def torch_reference(b, g, trace):
             pros[:, 3] += t(trace["t_log"])[None] / pred.stats["tilt_std"]
         if trace["unvoiced"]:
             pros[:, :2] = 0.0
+        if trace.get("pitch_ceiling") is not None:
+            from piper_train.prosody.features import soft_pitch_ceiling
+
+            pros[0, 0] = torch.from_numpy(soft_pitch_ceiling(pros[0, 0].numpy(), pros[0, 1].numpy(), trace["pitch_ceiling"]))
         diff_p = float((pros - t(trace["prosody"])).abs().max())
         _LOG.info("verify predictor ODE + decode + emphasis: max |diff| %.2e", diff_p)
         logw = Durations(g)(x, x_mask, t(trace["z"]), t(trace["h_add"]))
         wd = torch.exp(logw) * x_mask * t(trace["d_mul"]).view(1, 1, -1)
         w_ceil = torch.ceil(wd * trace["length_scale"]) * x_mask
+        if trace.get("stress_cap"):
+            from piper_train.prosody.features import cap_stress_frames
+
+            cap = float(np.ceil(trace["stress_cap"] * trace["length_scale"]))
+            w_ceil[0, 0] = torch.from_numpy(cap_stress_frames(w_ceil[0, 0].numpy(), trace["symbols"], cap))
         spk = t(trace["spk"]) if trace.get("spk") is not None else None
         audio = Acoustic(g)(x, x_mask, pros, w_ceil, t(trace["noise"]), spk)
     return audio.squeeze().numpy() * np.float32(10 ** (trace.get("gain_db", 0.0) / 20))

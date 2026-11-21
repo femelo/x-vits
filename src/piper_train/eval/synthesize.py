@@ -100,6 +100,8 @@ def main() -> None:
     p.add_argument("--style-speakers", default="",
                    help="comma-separated styles in speaker-id order: the style also selects that speaker "
                    "embedding (multi-speaker x-vits voice); no style -> 'neutral' if listed, else speaker 0")
+    p.add_argument("--pitch-ceiling", default="", help='per style soft pitch limit (std units), e.g. "laughing=2.6"')
+    p.add_argument("--stress-max-frames", type=float, help="cap for stress-mark token durations (frames)")
     p.add_argument("--style-gain", default="",
                    help='output level per style in dB, e.g. "whisper=-8,sleepy=-4"')
     p.add_argument("--pp-unvoiced-styles", default="",
@@ -212,6 +214,15 @@ def main() -> None:
         from ..prosody.train_dp_style import load_style_dp, style_cond
 
         dp_emb, dp_styles = load_style_dp(args.dp_style_ckpt, model.model_g, args.device)
+
+    _sym = {}
+
+    def symbol_of(t: int) -> str:
+        """phoneme id -> symbol, from the voice's config (loaded on first use)."""
+        if not _sym:
+            cfg_ = json.load(open(args.config or args.eval_set.parent / "config.json", encoding="utf-8"))
+            _sym.update({v[0]: k for k, v in cfg_["phoneme_id_map"].items()})
+        return _sym.get(t, "?")
 
     torch.manual_seed(args.seed)
     manifest, total_audio, total_wall = [], 0.0, 0.0
@@ -326,7 +337,14 @@ def main() -> None:
                 # (otherwise every token loses ~half a frame on average).
                 ls = args.length_scale
                 w = (torch.exp(logw) * x_mask)[:, 0] * torch.from_numpy(d_mul).to(logw)
-                kw["durations"] = torch.ceil(w * ls) / ls * x_mask[:, 0]
+                frames = torch.ceil(w * ls) * x_mask[:, 0]
+                if args.stress_max_frames:
+                    from ..prosody.features import cap_stress_frames
+
+                    syms = [symbol_of(int(t)) for t in ids[0].tolist()]
+                    frames[0] = torch.from_numpy(cap_stress_frames(frames[0].cpu().numpy(), syms,
+                                                                   float(math.ceil(args.stress_max_frames * ls)))).to(frames)
+                kw["durations"] = frames / ls
             elif args.pp_durations == "sdp":
                 del kw["durations"]
             elif args.pp_max_dur or args.pp_final_stretch != 1.0:
@@ -334,6 +352,14 @@ def main() -> None:
                     kw["durations"], ids.tolist(), id_to_symbol,
                     args.pp_max_dur, args.pp_final_stretch,
                 )
+        if "prosody" in kw and args.pitch_ceiling:
+            ceil_ = {k: float(v) for k, v in (kv.split("=") for kv in args.pitch_ceiling.split(","))}
+            sname_c = row.get("category") if args.pp_style in ("auto", "label") else args.pp_style
+            if sname_c in ceil_:
+                from ..prosody.features import soft_pitch_ceiling
+
+                pr = kw["prosody"][0].cpu().numpy()
+                kw["prosody"][0, 0] = torch.from_numpy(soft_pitch_ceiling(pr[0], pr[1], ceil_[sname_c])).to(kw["prosody"])
         if "prosody" in kw and args.pp_unvoiced_styles:
             sname_ = row.get("category") if args.pp_style in ("auto", "label") else args.pp_style
             if sname_ in args.pp_unvoiced_styles.split(","):

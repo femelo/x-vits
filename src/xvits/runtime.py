@@ -210,6 +210,11 @@ class XVits:
             pros[:, 3] += t_log[None] / self.pstats["tilt_std"]
         if style in d.get("unvoiced_styles", []):  # whispering: no voicing, no pitch
             pros[:, :2] = 0.0
+        ceiling = d.get("pitch_ceiling", {}).get(style)
+        if ceiling is not None:  # exaggeration must not leave the speaker's own pitch range
+            from piper_train.prosody.features import soft_pitch_ceiling
+
+            pros[0, 0] = soft_pitch_ceiling(pros[0, 0], pros[0, 1], ceiling)
         # durations
         ch = x.shape[1]  # the SDP width equals the text encoder width
         h_add = np.zeros((1, ch, len(ids)), np.float32)
@@ -229,6 +234,12 @@ class XVits:
         ls = d["length_scale"] if length_scale is None else length_scale
         w = np.exp(logw) * mask * d_mul.reshape(1, 1, -1)
         w_ceil = (np.ceil(w * ls) * mask).astype(np.float32)
+        stress_cap = d.get("stress_max_frames")
+        if stress_cap:  # a long stress mark sounds like an extra vowel
+            from piper_train.prosody.features import cap_stress_frames
+
+            w_ceil[0, 0] = cap_stress_frames(w_ceil[0, 0], [self.inv.get(int(i), "?") for i in ids],
+                                             float(np.ceil(stress_cap * ls)))
         n_frames = int(w_ceil.sum())
         noise = (rng.standard_normal((1, self.m["inter_channels"], n_frames)) * d["noise_scale"]).astype(np.float32)
         feeds = {"x": x, "x_mask": mask, "prosody": pros.astype(np.float32), "w_ceil": w_ceil, "noise": noise}
@@ -243,7 +254,8 @@ class XVits:
                            "steps": n_steps, "style_index": sidx, "prosody": pros, "p_st": p_st,
                            "e_log": e_log, "t_log": t_log, "voicing_fix": voicing_fix, "w_ceil": w_ceil,
                            "symbols": [self.inv.get(int(i), "?") for i in ids], "unvoiced": style in d.get("unvoiced_styles", []),
-                           "d_mul": d_mul, "z": z, "h_add": h_add, "noise": noise, "length_scale": ls, "spk": spk, "gain_db": gain_db}
+                           "d_mul": d_mul, "z": z, "h_add": h_add, "noise": noise, "length_scale": ls, "spk": spk, "gain_db": gain_db,
+                           "pitch_ceiling": ceiling, "stress_cap": stress_cap}
         return audio
 
 

@@ -48,6 +48,34 @@ def fix_voicing_np(prosody: np.ndarray, symbols, max_vfrac: float = 0.4) -> np.n
     return p
 
 
+def soft_pitch_ceiling(lf0: np.ndarray, vfrac: np.ndarray, ceiling: float, knee: float = 0.25) -> np.ndarray:
+    """Soft-limit standardised log-F0 of voiced tokens above ``ceiling`` (a style's p95 in
+    the training data): style exaggeration can otherwise push pitch beyond anything the
+    speaker produced, which comes out as a frozen squeal.  Below the ceiling: unchanged."""
+    out = np.asarray(lf0, np.float64).copy()
+    hi = (np.asarray(vfrac) > 0.5) & (out > ceiling)
+    out[hi] = ceiling + knee * np.tanh((out[hi] - ceiling) / knee)
+    return out.astype(np.float32)
+
+
+STRESS_MARKS = set("ˈˌ")
+
+
+def cap_stress_frames(frames: np.ndarray, symbols, cap: float) -> np.ndarray:
+    """Stress marks carry frames in Piper's token grid but no sound of their own; a long one
+    is heard as an extra vowel ("PM" -> "P-E-M").  Cap them at ``cap`` frames and give the
+    excess to the next vowel or sonorant (within 4 tokens), so the timing is kept."""
+    f = np.asarray(frames, np.float32).copy()
+    for i, s in enumerate(symbols):
+        if s in STRESS_MARKS and f[i] > cap:
+            for j in range(i + 1, min(i + 5, len(symbols))):
+                if symbols[j] in VOICED:
+                    f[j] += f[i] - cap
+                    f[i] = cap
+                    break
+    return f
+
+
 def voiced_effort(tilt: np.ndarray, vfrac: np.ndarray) -> np.ndarray:
     """Vocal effort lives in voiced sounds: keep the voiced tokens' tilt and
     interpolate it linearly across consonants, pads and pauses (the way pitch

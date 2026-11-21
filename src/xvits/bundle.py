@@ -42,6 +42,8 @@ class Bundle:
             # output level per style in dB: datasets are loudness-normalised per file, so a whisper
             # comes out as loud as a shout unless told otherwise (e.g. {"whisper": -8, "sleepy": -4})
             "style_gain_db": {},
+            "pitch_ceiling": {},               # per style: soft limit at the style's p95 pitch (std units)
+            "stress_max_frames": None,         # cap for stress-mark tokens (p95 of the training alignments)
         }
         d.update(self.defaults or {})
         self.defaults = d
@@ -80,6 +82,10 @@ class Bundle:
             a += ["--pp-voicing-fix"]
         if self.speakers:
             a += ["--style-speakers", ",".join(self.speakers)]
+        if d["pitch_ceiling"]:
+            a += ["--pitch-ceiling", ",".join(f"{k}={v}" for k, v in d["pitch_ceiling"].items())]
+        if d["stress_max_frames"]:
+            a += ["--stress-max-frames", str(d["stress_max_frames"])]
         if d["style_gain_db"]:
             a += ["--style-gain", ",".join(f"{k}={v}" for k, v in d["style_gain_db"].items())]
         if style:
